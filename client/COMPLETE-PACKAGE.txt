@@ -1,0 +1,13 @@
+映链 MapLink 客户端完整版 0.1.0
+
+内置组件：
+- MapLink WebView 客户端
+- 官方原版 frpc 0.71.0（Windows x64）
+- 完整安装包内置 Microsoft Edge WebView2 离线运行环境
+
+使用方法：
+1. 推荐运行 MapLink-Complete-Setup-v0.1.0-win64.exe 安装。
+2. 也可以解压便携 ZIP，保持 MapLink-Client.exe 与 frpc.exe 在同一目录。
+3. 填写服务端 IP、接入端口、Token 和 TCP/UDP 映射后，点击“保存并启动”。
+
+客户端不会向 WebView 暴露命令行，只能受控执行 frpc 的启动、停止、状态和日志功能。

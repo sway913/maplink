@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>映链 MapLink</title>
+    <link rel="icon" href="maplink-icon.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <img class="brand" src="maplink-icon.png" alt="" />
+        <div><small>MAPLINK CLIENT</small><h1>映链客户端</h1></div>
+        <div class="header-actions">
+          <span class="status" id="runtime-status">正在检查 frpc</span>
+          <button class="about-button" id="about-button" type="button">关于</button>
+        </div>
+      </header>
+      <section class="notice"><strong>已内置官方原版 frpc 0.71.0</strong><p>完整安装包已包含 <code>frpc.exe</code> 与离线 WebView2 运行环境，无需另外下载或安装底层。</p></section>
+      <form id="profile-form">
+        <section class="panel">
+          <div class="section-title"><div><small>SERVER</small><h2>服务端信息</h2></div></div>
+          <div class="grid">
+            <label>设备标识<input id="deviceID" value="device-01" pattern="[A-Za-z0-9_-]{1,32}" maxlength="32" required /></label>
+            <label>服务器 IP<input id="serverAddr" value="82.158.91.82" required /></label>
+            <label>接入端口<select id="serverPort"><option>7000</option><option>7001</option><option>7002</option><option>7003</option><option>7004</option><option>7005</option><option>7006</option><option>7007</option><option>7008</option><option>7009</option><option>7010</option></select></label>
+            <label class="wide">认证 Token<input id="token" type="password" placeholder="从服务端管理台复制" required /></label>
+            <label>传输协议<select id="protocol"><option value="tcp">TCP</option><option value="kcp">KCP</option><option value="quic">QUIC</option></select></label>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="section-title"><div><small>PROXIES</small><h2>端口映射</h2><p>同一设备可添加多条 TCP/UDP；不同设备不要重复占用相同协议的远程端口。</p></div><button id="add-proxy" type="button">＋ 添加映射</button></div>
+          <div id="proxy-list"></div>
+        </section>
+        <section class="panel runtime-panel">
+          <div class="section-title"><div><small>RUNTIME</small><h2>原版 frpc 控制</h2><p>配置写入当前用户目录，原版进程在后台运行；关闭本程序时会自动停止。</p></div><div class="runtime-actions"><button id="refresh-client" type="button">刷新</button><button id="stop-client" type="button">停止</button><button class="primary" id="start-client" type="button">保存并启动</button></div></div>
+          <div class="runtime-grid">
+            <div><span>进程状态</span><strong id="process-state">检查中</strong></div>
+            <div><span>进程 PID</span><strong id="process-pid">—</strong></div>
+            <div class="path"><span>原版程序</span><code id="binary-path">—</code></div>
+            <div class="path"><span>运行配置</span><code id="config-path">—</code></div>
+          </div>
+          <div class="log-heading"><span>最近日志</span><code id="log-path">—</code></div>
+          <pre id="client-logs">暂无日志</pre>
+        </section>
+        <footer><span id="feedback">配置只保存在当前用户目录。</span><button id="copy-config" type="button">复制 TOML</button><button class="primary" type="submit">保存配置</button></footer>
+      </form>
+    </main>
+    <dialog class="about-dialog" id="about-dialog" aria-labelledby="about-title">
+      <div class="about-hero">
+        <img class="about-logo" src="maplink-icon.png" alt="" />
+        <div class="about-heading">
+          <small>MAPLINK CLIENT</small>
+          <h2 id="about-title">映链 MapLink</h2>
+          <p>多设备端口映射管理客户端</p>
+        </div>
+        <form method="dialog"><button class="dialog-close" aria-label="关闭关于窗口" type="submit">×</button></form>
+      </div>
+      <div class="about-content">
+        <div class="about-version"><span>当前版本</span><strong>版本 0.1.0</strong></div>
+        <p class="about-intro">映链用于连接自有服务器与多台设备，统一管理 TCP/UDP 端口映射、运行状态和客户端日志。</p>
+        <div class="about-features" aria-label="主要能力">
+          <span>多设备</span><span>TCP / UDP</span><span>多接入端口</span><span>本地配置</span>
+        </div>
+        <section class="source-card">
+          <div><small>OPEN SOURCE</small><h3>Powered by frp</h3></div>
+          <p>底层网络能力使用 fatedier/frp 官方原版组件。本客户端未修改其协议实现，并随安装包保留许可证文本。</p>
+          <dl>
+            <div><dt>上游项目</dt><dd><code>github.com/fatedier/frp</code></dd></div>
+            <div><dt>开源许可</dt><dd>Apache License 2.0</dd></div>
+            <div><dt>内置组件</dt><dd>frpc 0.71.0</dd></div>
+          </dl>
+        </section>
+        <p class="about-footnote">MapLink 是独立管理界面，并非 frp 官方产品。FRP 名称及上游项目归其各自权利人所有。</p>
+      </div>
+    </dialog>
+    <template id="proxy-template">
+      <div class="proxy-row">
+        <input data-field="name" placeholder="名称，如 ssh-home" required />
+        <select data-field="type"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+        <input data-field="localIP" value="127.0.0.1" placeholder="本地 IP" required />
+        <input data-field="localPort" type="number" min="1" max="65535" placeholder="本地端口" required />
+        <input data-field="remotePort" type="number" min="1" max="65535" placeholder="远程端口" required />
+        <button data-remove type="button">删除</button>
+      </div>
+    </template>
+    <script src="app.js"></script>
+  </body>
+</html>

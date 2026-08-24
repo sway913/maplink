@@ -1,0 +1,25 @@
+[Unit]
+Description=MapLink Server redirect for additional control ports
+After=network-pre.target frps.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/sbin/nft add table inet frp_manager
+ExecStart=/usr/sbin/nft -f /etc/frp-manager/control-ports.nft
+RemainAfterExit=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

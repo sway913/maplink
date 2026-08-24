@@ -1,0 +1,40 @@
+# 映链 MapLink
+
+独立的端口映射管理项目：MapLink Server 运行官方原版 `frps`，自研控制面仅负责配置校验、失败回滚、凭据、端口和监控；MapLink Client 使用 Tauri WebView，并把官方 `frpc` 作为受控 sidecar。
+
+## 目录
+
+- `server/`：Go 管理 API、认证、配置渲染及 systemd 控制。
+- `web/`：可静态部署的服务端管理界面。
+- `client/`：Tauri 2 WebView 客户端，负责多设备、多 TCP/UDP 配置以及原版 `frpc` 的受控启停、状态和日志。完整发布包内置官方 `frpc` 0.71.0；安装包同时包含 WebView2 离线运行环境。
+
+## 服务端安全边界
+
+- FRP 原生仪表盘只监听 `127.0.0.1`，由管理 API 代理允许的只读资源。
+- 管理页面使用 HTTPS、HttpOnly/SameSite 会话、CSRF Token 和登录限速。
+- 管理员可在“安全设置”中校验当前密码并修改登录密码；新密码以 PBKDF2-SHA256 加盐哈希持久化，修改后注销全部管理会话。
+- 配置保存先执行 `frps verify`；重启失败自动恢复旧配置。
+- 客户端接入端口段由独立 nftables 表在内核中透明重定向到原版 `frps.bindPort`；入口失败同样参与配置回滚。
+- 多台客户端通过独立 `clientID` / `user` 区分，可分别选择接入端口并配置多条 TCP/UDP 代理。
+- 服务操作限定为 start/stop/restart，日志接口限定读取 `frps.service`，没有任意 Shell API。
+
+## 本地验证
+
+```powershell
+cd server
+go test ./...
+go vet ./...
+
+cd ../web
+npm run lint
+npm run build:static
+npm run build
+
+cd ../client/src-tauri
+cargo fmt --check
+cargo test
+cargo build
+
+cd ..
+node --check ui/app.js
+```

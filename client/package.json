@@ -1,0 +1,14 @@
+{
+  "name": "maplink-client",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.5"
+  }
+}

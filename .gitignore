@@ -1,0 +1,15 @@
+dist/
+web/node_modules/
+web/.next/
+web/out/
+web/.vinext/
+web/.wrangler/
+client/node_modules/
+client/src-tauri/target/
+client/src-tauri/.frp-download/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
