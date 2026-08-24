@@ -1,0 +1,84 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+      - name: Test server
+        working-directory: server
+        run: |
+          go test ./...
+          go vet ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Test and build management UI
+        working-directory: web
+        run: |
+          npm ci
+          npm test
+          npm run lint
+          npm run build:static
+
+  windows-client:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          rustup update stable
+          rustup default stable
+
+      - name: Test client
+        working-directory: client
+        run: |
+          npm ci
+          npm test
+          node --check ui/app.js
+
+      - name: Test Rust client
+        working-directory: client/src-tauri
+        run: |
+          cargo fmt --check
+          cargo test --locked
+
+      - name: Build complete Windows packages
+        shell: pwsh
+        run: ./client/scripts/build-complete.ps1
+
+      - name: Smoke-test packages
+        shell: pwsh
+        run: ./client/tests/package-smoke.ps1
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" "dist/MapLink-Complete-Setup-v0.1.0-win64.exe" "dist/MapLink-Complete-v0.1.0-win64.zip" --repo "${{ github.repository }}" --title "映链 MapLink v0.1.0" --notes-file ".github/release-notes/v0.1.0.md" --verify-tag
