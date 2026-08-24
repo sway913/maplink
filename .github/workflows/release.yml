@@ -1,30 +1,40 @@
-name: Build and release
+name: CI and release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: maplink-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: server/go.mod
+          cache: false
       - name: Test server
         working-directory: server
         run: |
           go test ./...
           go vet ./...
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
@@ -38,13 +48,12 @@ jobs:
           npm run build:static
 
   windows-client:
-    if: startsWith(github.ref, 'refs/tags/')
     needs: validate
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
@@ -53,8 +62,17 @@ jobs:
       - name: Install Rust
         shell: pwsh
         run: |
-          rustup update stable
+          rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/src-tauri/target
+          key: windows-cargo-${{ hashFiles('client/src-tauri/Cargo.lock') }}
+          restore-keys: windows-cargo-
 
       - name: Test client
         working-directory: client
@@ -69,16 +87,71 @@ jobs:
           cargo fmt --check
           cargo test --locked
 
-      - name: Build complete Windows packages
+      - name: Resolve release metadata
+        if: github.event_name != 'pull_request'
+        id: release
         shell: pwsh
-        run: ./client/scripts/build-complete.ps1
+        run: |
+          $config = Get-Content -LiteralPath 'client/src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+          $version = [string]$config.version
+          $tag = "v$version"
+          if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -ne $tag) {
+            throw "标签 ${{ github.ref_name }} 与应用版本 $tag 不一致"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build complete Windows packages
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: ./client/scripts/build-complete.ps1 -Version '${{ steps.release.outputs.version }}'
 
       - name: Smoke-test packages
+        if: github.event_name != 'pull_request'
         shell: pwsh
-        run: ./client/tests/package-smoke.ps1
+        run: ./client/tests/package-smoke.ps1 -AppVersion '${{ steps.release.outputs.version }}'
 
-      - name: Create GitHub release
+      - name: Upload Actions package
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: MapLink-${{ steps.release.outputs.tag }}-windows-x64
+          path: |
+            dist/MapLink-Complete-Setup-${{ steps.release.outputs.tag }}-win64.exe
+            dist/MapLink-Complete-${{ steps.release.outputs.tag }}-win64.zip
+            dist/MapLink-${{ steps.release.outputs.tag }}-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub release when version is new
+        if: github.event_name == 'push'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" "dist/MapLink-Complete-Setup-v0.1.0-win64.exe" "dist/MapLink-Complete-v0.1.0-win64.zip" --repo "${{ github.repository }}" --title "映链 MapLink v0.1.0" --notes-file ".github/release-notes/v0.1.0.md" --verify-tag
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          & gh release view $env:RELEASE_TAG --repo '${{ github.repository }}' *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Output "Release $env:RELEASE_TAG 已存在，仅保留本次 Actions 构建包。"
+            exit 0
+          }
+
+          $assets = Get-ChildItem -LiteralPath 'dist' -File | Select-Object -ExpandProperty FullName
+          $notes = Get-Content -LiteralPath '.github/release-preamble.md' -Raw
+          $releaseArgs = @(
+            'release', 'create', $env:RELEASE_TAG
+          ) + $assets + @(
+            '--repo', '${{ github.repository }}',
+            '--title', "映链 MapLink $env:RELEASE_TAG",
+            '--generate-notes',
+            '--notes', $notes
+          )
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $releaseArgs += '--verify-tag'
+          } else {
+            $releaseArgs += @('--target', '${{ github.sha }}')
+          }
+          & gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release 创建失败，退出码：$LASTEXITCODE"
+          }

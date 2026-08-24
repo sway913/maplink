@@ -1,3 +1,7 @@
+param(
+    [string]$Version
+)
+
 $ErrorActionPreference = 'Stop'
 
 $clientDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -5,8 +9,21 @@ $projectDir = [System.IO.Path]::GetFullPath((Join-Path $clientDir '..'))
 $tauriDir = Join-Path $clientDir 'src-tauri'
 $distDir = Join-Path $projectDir 'dist'
 $stagingDir = Join-Path $distDir 'maplink-complete-package-staging'
-$portableZip = Join-Path $distDir 'MapLink-Complete-v0.1.0-win64.zip'
-$installerOutput = Join-Path $distDir 'MapLink-Complete-Setup-v0.1.0-win64.exe'
+$tauriConfig = Get-Content -LiteralPath (Join-Path $tauriDir 'tauri.conf.json') -Raw | ConvertFrom-Json
+$configuredVersion = [string]$tauriConfig.version
+if ($configuredVersion -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+    throw "tauri.conf.json 中的版本号无效：$configuredVersion"
+}
+if ($Version) {
+    $requestedVersion = $Version.Trim().TrimStart('v')
+    if ($requestedVersion -ne $configuredVersion) {
+        throw "发布版本与应用版本不一致：发布 $requestedVersion，应用 $configuredVersion"
+    }
+}
+$releaseVersion = "v$configuredVersion"
+$portableZip = Join-Path $distDir "MapLink-Complete-$releaseVersion-win64.zip"
+$installerOutput = Join-Path $distDir "MapLink-Complete-Setup-$releaseVersion-win64.exe"
+$checksumOutput = Join-Path $distDir "MapLink-$releaseVersion-SHA256SUMS.txt"
 $frpc = Join-Path $tauriDir 'resources\frpc.exe'
 
 if (-not (Test-Path -LiteralPath $frpc -PathType Leaf)) {
@@ -52,7 +69,13 @@ New-Item -ItemType Directory -Path $resolvedStaging | Out-Null
 Copy-Item -LiteralPath $desktopBinary -Destination (Join-Path $resolvedStaging 'MapLink-Client.exe')
 Copy-Item -LiteralPath $frpc -Destination (Join-Path $resolvedStaging 'frpc.exe')
 Copy-Item -LiteralPath (Join-Path $tauriDir 'resources\FRP-LICENSE') -Destination (Join-Path $resolvedStaging 'FRP-LICENSE.txt')
-Copy-Item -LiteralPath (Join-Path $clientDir 'COMPLETE-PACKAGE.txt') -Destination (Join-Path $resolvedStaging '使用说明.txt')
+$packageGuide = Get-Content -LiteralPath (Join-Path $clientDir 'COMPLETE-PACKAGE.txt') -Raw
+$packageGuide = $packageGuide.Replace('{{VERSION}}', $configuredVersion)
+[System.IO.File]::WriteAllText(
+    (Join-Path $resolvedStaging '使用说明.txt'),
+    $packageGuide,
+    [System.Text.UTF8Encoding]::new($false)
+)
 
 if (Test-Path -LiteralPath $portableZip) {
     Remove-Item -LiteralPath $portableZip -Force
@@ -60,4 +83,9 @@ if (Test-Path -LiteralPath $portableZip) {
 Compress-Archive -Path (Join-Path $resolvedStaging '*') -DestinationPath $portableZip -CompressionLevel Optimal
 Copy-Item -LiteralPath $installer.FullName -Destination $installerOutput -Force
 
-Get-FileHash -Algorithm SHA256 -LiteralPath $portableZip, $installerOutput
+$hashes = Get-FileHash -Algorithm SHA256 -LiteralPath $portableZip, $installerOutput | Sort-Object Path
+$hashLines = $hashes | ForEach-Object { '{0}  {1}' -f $_.Hash.ToLowerInvariant(), (Split-Path $_.Path -Leaf) }
+[System.IO.File]::WriteAllLines($checksumOutput, $hashLines, [System.Text.UTF8Encoding]::new($false))
+
+$hashes
+Get-Item -LiteralPath $checksumOutput

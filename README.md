@@ -38,3 +38,10 @@ cargo build
 cd ..
 node --check ui/app.js
 ```
+
+## 自动构建与发布
+
+- 推送到 `main`：自动执行服务端、Web、客户端测试，生成 Windows 安装包、便携 ZIP 和 SHA-256 校验文件，可在 Actions 的 Artifacts 中下载。
+- 提交 Pull Request：自动执行同一套代码检查，但不生成或发布安装包。
+- 发布新版本：同步修改客户端版本号并推送到 `main`；当对应 Release 尚不存在时，Actions 会自动创建 `v<版本号>` 标签、生成发布说明并上传全部安装包。
+- 推送已有的 `v*` 标签也会触发同一套发布流程；标签与应用版本不一致时会拒绝发布。

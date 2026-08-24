@@ -5,17 +5,21 @@ import test from 'node:test';
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
 test('客户端提供 MapLink 关于窗口和完整的开源归属信息', async () => {
-  const [html, script, styles] = await Promise.all([
+  const [html, script, styles, tauriConfig, packageConfig, cargo] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
     read('../ui/styles.css'),
+    read('../src-tauri/tauri.conf.json').then(JSON.parse),
+    read('../package.json').then(JSON.parse),
+    read('../src-tauri/Cargo.toml'),
   ]);
+  const versionPattern = tauriConfig.version.replaceAll('.', '\\.');
 
   assert.match(html, /id="about-button"/);
   assert.match(html, /<dialog[^>]+id="about-dialog"/);
   assert.match(html, /映链/);
   assert.match(html, /MapLink/);
-  assert.match(html, /版本\s*0\.1\.0/);
+  assert.match(html, new RegExp(`版本\\s*${versionPattern}`));
   assert.match(html, /Powered by frp/);
   assert.match(html, /github\.com\/fatedier\/frp/);
   assert.match(html, /Apache License 2\.0/);
@@ -26,6 +30,8 @@ test('客户端提供 MapLink 关于窗口和完整的开源归属信息', async
   assert.match(script, /showModal\(\)/);
   assert.match(script, /about-dialog/);
   assert.match(styles, /\.about-dialog/);
+  assert.equal(packageConfig.version, tauriConfig.version);
+  assert.match(cargo, new RegExp(`version = "${versionPattern}"`));
 });
 
 test('桌面窗口使用 MapLink 用户可见名称', async () => {
