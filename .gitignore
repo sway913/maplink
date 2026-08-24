@@ -1,4 +1,6 @@
 dist/
+/MapLink Client/
+/MapLink-Complete-Setup-*.exe
 web/node_modules/
 web/.next/
 web/out/

@@ -23,7 +23,7 @@
           <div class="section-title"><div><small>SERVER</small><h2>服务端信息</h2></div></div>
           <div class="grid">
             <label>设备标识<input id="deviceID" value="device-01" pattern="[A-Za-z0-9_-]{1,32}" maxlength="32" required /></label>
-            <label>服务器 IP<input id="serverAddr" value="82.158.91.82" required /></label>
+            <label>服务器 IP<input id="serverAddr" value="" placeholder="请输入服务器地址" required /></label>
             <label>接入端口<select id="serverPort"><option>7000</option><option>7001</option><option>7002</option><option>7003</option><option>7004</option><option>7005</option><option>7006</option><option>7007</option><option>7008</option><option>7009</option><option>7010</option></select></label>
             <label class="wide">认证 Token<input id="token" type="password" placeholder="从服务端管理台复制" required /></label>
             <label>传输协议<select id="protocol"><option value="tcp">TCP</option><option value="kcp">KCP</option><option value="quic">QUIC</option></select></label>

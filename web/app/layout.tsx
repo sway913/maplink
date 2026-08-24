@@ -1,8 +1,10 @@
 import type { Metadata } from 'next';
 import './globals.css';
 
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+
 export const metadata: Metadata = {
-  metadataBase: new URL('https://82.158.91.82:7400'),
+  ...(siteUrl ? { metadataBase: new URL(siteUrl) } : {}),
   title: '映链 MapLink',
   description: 'MapLink 多设备端口映射服务端控制台',
   icons: { icon: '/maplink-icon.png', apple: '/maplink-icon.png' },

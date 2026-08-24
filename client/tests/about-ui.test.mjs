@@ -21,6 +21,8 @@ test('客户端提供 MapLink 关于窗口和完整的开源归属信息', async
   assert.match(html, /Apache License 2\.0/);
   assert.match(html, /maplink-icon\.png/);
   assert.doesNotMatch(html, /class="brand">F</);
+  assert.doesNotMatch(html, /82\.158\.91\.82/);
+  assert.match(html, /id="serverAddr"\s+value=""/);
   assert.match(script, /showModal\(\)/);
   assert.match(script, /about-dialog/);
   assert.match(styles, /\.about-dialog/);

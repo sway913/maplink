@@ -14,6 +14,8 @@ test('服务端控制台统一使用 MapLink 品牌和新图标', async () => {
   assert.match(layout, /映链 MapLink/);
   assert.match(layout, /maplink-icon\.png/);
   assert.match(layout, /og\.png/);
+  assert.doesNotMatch(layout, /82\.158\.91\.82/);
+  assert.match(layout, /NEXT_PUBLIC_SITE_URL/);
   assert.doesNotMatch(layout, /title:\s*['"]FRP Manager/);
   assert.match(page, /映链 MapLink/);
   assert.match(page, /MAPLINK SERVER CONSOLE/);
