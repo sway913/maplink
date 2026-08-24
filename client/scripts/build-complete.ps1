@@ -23,7 +23,7 @@ if ($Version) {
 $releaseVersion = "v$configuredVersion"
 $portableZip = Join-Path $distDir "MapLink-Complete-$releaseVersion-win64.zip"
 $installerOutput = Join-Path $distDir "MapLink-Complete-Setup-$releaseVersion-win64.exe"
-$checksumOutput = Join-Path $distDir "MapLink-$releaseVersion-SHA256SUMS.txt"
+$checksumOutput = Join-Path $distDir "MapLink-$releaseVersion-windows-x64-SHA256SUMS.txt"
 $frpc = Join-Path $tauriDir 'resources\frpc.exe'
 
 if (-not (Test-Path -LiteralPath $frpc -PathType Leaf)) {

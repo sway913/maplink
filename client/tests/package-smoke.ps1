@@ -14,7 +14,7 @@ $AppVersion = $AppVersion.Trim().TrimStart('v')
 $releaseVersion = "v$AppVersion"
 $portableZip = Join-Path $DistDir "MapLink-Complete-$releaseVersion-win64.zip"
 $installer = Join-Path $DistDir "MapLink-Complete-Setup-$releaseVersion-win64.exe"
-$checksumFile = Join-Path $DistDir "MapLink-$releaseVersion-SHA256SUMS.txt"
+$checksumFile = Join-Path $DistDir "MapLink-$releaseVersion-windows-x64-SHA256SUMS.txt"
 
 if (-not (Test-Path -LiteralPath $portableZip -PathType Leaf)) {
     throw "缺少便携完整包：$portableZip"

@@ -421,7 +421,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn renders_official_frpc_toml_with_multiple_proxies() {
@@ -470,9 +473,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be valid")
             .as_nanos();
+        let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "frp-desktop-sidecar-{}-{suffix}",
-            std::process::id()
+            "frp-desktop-sidecar-{}-{suffix}-{sequence}",
+            std::process::id(),
         ))
     }
 
@@ -509,13 +513,18 @@ mod tests {
         runtime
             .start_process(&binary, &config, &log)
             .expect("sidecar should start");
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        let mut log_contents = String::new();
+        for _ in 0..40 {
+            log_contents = fs::read_to_string(&log).expect("log should be readable");
+            if log_contents.contains("fake-frpc-started") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         assert!(runtime.is_running().expect("status should be readable"));
         runtime.stop_process().expect("sidecar should stop");
         assert!(!runtime.is_running().expect("status should be readable"));
-        assert!(fs::read_to_string(&log)
-            .expect("log should be readable")
-            .contains("fake-frpc-started"));
+        assert!(log_contents.contains("fake-frpc-started"));
 
         fs::remove_dir_all(&dir).expect("test directory should be removed");
     }
@@ -563,6 +572,25 @@ mod tests {
         assert!(
             binary.is_file(),
             "the complete Windows package must include {}",
+            binary.display()
+        );
+        let output = Command::new(&binary)
+            .arg("--version")
+            .output()
+            .expect("bundled frpc should start");
+        assert!(output.status.success(), "frpc --version should succeed");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0.71.0");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn bundled_macos_frpc_is_the_pinned_official_version() {
+        let binary = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("frpc");
+        assert!(
+            binary.is_file(),
+            "the complete macOS package must include {}",
             binary.display()
         );
         let output = Command::new(&binary)

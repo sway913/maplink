@@ -41,15 +41,33 @@ test('桌面窗口使用 MapLink 用户可见名称', async () => {
   assert.equal(config.app.windows[0].title, '映链 MapLink');
 });
 
+test('Windows 与 macOS 使用独立原版 frpc 和原生 WebView 打包配置', async () => {
+  const [windowsConfig, macosConfig, readme] = await Promise.all([
+    read('../src-tauri/tauri.windows.conf.json').then(JSON.parse),
+    read('../src-tauri/tauri.macos.conf.json').then(JSON.parse),
+    read('../README.md'),
+  ]);
+
+  assert.deepEqual(windowsConfig.bundle.targets, ['nsis']);
+  assert.equal(windowsConfig.bundle.resources['resources/frpc.exe'], 'frpc.exe');
+  assert.equal(windowsConfig.bundle.windows.webviewInstallMode.type, 'offlineInstaller');
+  assert.deepEqual(macosConfig.bundle.targets, ['app', 'dmg']);
+  assert.equal(macosConfig.bundle.resources['resources/frpc'], 'frpc');
+  assert.equal(macosConfig.bundle.macOS.minimumSystemVersion, '11.0');
+  assert.match(readme, /WKWebView/);
+});
+
 test('完整包和程序文件使用 MapLink 名称', async () => {
-  const [buildScript, smokeTest, packageGuide, cargo] = await Promise.all([
+  const [buildScript, macBuildScript, smokeTest, macSmokeTest, packageGuide, cargo] = await Promise.all([
     read('../scripts/build-complete.ps1'),
+    read('../scripts/build-macos.sh'),
     read('./package-smoke.ps1'),
+    read('./package-smoke-macos.sh'),
     read('../COMPLETE-PACKAGE.txt'),
     read('../src-tauri/Cargo.toml'),
   ]);
 
-  for (const content of [buildScript, smokeTest, packageGuide]) {
+  for (const content of [buildScript, macBuildScript, smokeTest, macSmokeTest, packageGuide]) {
     assert.match(content, /MapLink/);
     assert.doesNotMatch(content, /FRP-Desktop/);
   }

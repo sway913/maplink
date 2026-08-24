@@ -106,12 +106,12 @@ jobs:
         shell: pwsh
         run: ./client/scripts/build-complete.ps1 -Version '${{ steps.release.outputs.version }}'
 
-      - name: Smoke-test packages
+      - name: Smoke-test Windows packages
         if: github.event_name != 'pull_request'
         shell: pwsh
         run: ./client/tests/package-smoke.ps1 -AppVersion '${{ steps.release.outputs.version }}'
 
-      - name: Upload Actions package
+      - name: Upload Windows package
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
@@ -119,39 +119,137 @@ jobs:
           path: |
             dist/MapLink-Complete-Setup-${{ steps.release.outputs.tag }}-win64.exe
             dist/MapLink-Complete-${{ steps.release.outputs.tag }}-win64.zip
-            dist/MapLink-${{ steps.release.outputs.tag }}-SHA256SUMS.txt
+            dist/MapLink-${{ steps.release.outputs.tag }}-windows-x64-SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
 
+  macos-client:
+    needs: validate
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add aarch64-apple-darwin
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/src-tauri/target
+          key: macos-arm64-cargo-${{ hashFiles('client/src-tauri/Cargo.lock') }}
+          restore-keys: macos-arm64-cargo-
+
+      - name: Test client
+        working-directory: client
+        run: |
+          npm ci
+          npm test
+          node --check ui/app.js
+
+      - name: Test Rust client
+        working-directory: client/src-tauri
+        run: |
+          cargo fmt --check
+          cargo test --locked
+
+      - name: Resolve release metadata
+        if: github.event_name != 'pull_request'
+        id: release
+        run: |
+          version="$(node -p "require('./client/src-tauri/tauri.conf.json').version")"
+          tag="v$version"
+          if [[ '${{ github.ref_type }}' == 'tag' && '${{ github.ref_name }}' != "$tag" ]]; then
+            echo "标签 ${{ github.ref_name }} 与应用版本 $tag 不一致" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build complete macOS Apple Silicon packages
+        if: github.event_name != 'pull_request'
+        run: ./client/scripts/build-macos.sh '${{ steps.release.outputs.version }}'
+
+      - name: Smoke-test macOS packages
+        if: github.event_name != 'pull_request'
+        run: ./client/tests/package-smoke-macos.sh ./dist '${{ steps.release.outputs.version }}'
+
+      - name: Upload macOS package
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: MapLink-${{ steps.release.outputs.tag }}-macos-arm64
+          path: |
+            dist/MapLink-${{ steps.release.outputs.tag }}-macos-arm64.dmg
+            dist/MapLink-${{ steps.release.outputs.tag }}-macos-arm64.app.zip
+            dist/MapLink-${{ steps.release.outputs.tag }}-macos-arm64-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs:
+      - windows-client
+      - macos-client
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve release metadata
+        id: release
+        run: |
+          version="$(node -p "require('./client/src-tauri/tauri.conf.json').version")"
+          tag="v$version"
+          if [[ '${{ github.ref_type }}' == 'tag' && '${{ github.ref_name }}' != "$tag" ]]; then
+            echo "标签 ${{ github.ref_name }} 与应用版本 $tag 不一致" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download all platform packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: MapLink-${{ steps.release.outputs.tag }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify release assets
+        run: |
+          test "$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')" = "6"
+          cd dist
+          sha256sum -c MapLink-${{ steps.release.outputs.tag }}-windows-x64-SHA256SUMS.txt
+          sha256sum -c MapLink-${{ steps.release.outputs.tag }}-macos-arm64-SHA256SUMS.txt
+
       - name: Create GitHub release when version is new
-        if: github.event_name == 'push'
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          & gh release view $env:RELEASE_TAG --repo '${{ github.repository }}' *> $null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Output "Release $env:RELEASE_TAG 已存在，仅保留本次 Actions 构建包。"
+          if gh release view "$RELEASE_TAG" --repo '${{ github.repository }}' >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG 已存在，本次构建包保留在 Actions Artifacts。"
             exit 0
-          }
+          fi
 
-          $assets = Get-ChildItem -LiteralPath 'dist' -File | Select-Object -ExpandProperty FullName
-          $notes = Get-Content -LiteralPath '.github/release-preamble.md' -Raw
-          $releaseArgs = @(
-            'release', 'create', $env:RELEASE_TAG
-          ) + $assets + @(
-            '--repo', '${{ github.repository }}',
-            '--title', "映链 MapLink $env:RELEASE_TAG",
-            '--generate-notes',
-            '--notes', $notes
+          release_args=(
+            release create "$RELEASE_TAG" dist/*
+            --repo '${{ github.repository }}'
+            --title "映链 MapLink $RELEASE_TAG"
+            --generate-notes
+            --notes-file .github/release-preamble.md
           )
-          if ('${{ github.ref_type }}' -eq 'tag') {
-            $releaseArgs += '--verify-tag'
-          } else {
-            $releaseArgs += @('--target', '${{ github.sha }}')
-          }
-          & gh @releaseArgs
-          if ($LASTEXITCODE -ne 0) {
-            throw "GitHub Release 创建失败，退出码：$LASTEXITCODE"
-          }
+          if [[ '${{ github.ref_type }}' == 'tag' ]]; then
+            release_args+=(--verify-tag)
+          else
+            release_args+=(--target '${{ github.sha }}')
+          fi
+          gh "${release_args[@]}"
