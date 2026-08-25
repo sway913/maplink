@@ -70,6 +70,7 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.doesNotMatch(html, /RDP \/ VNC/);
   assert.match(script, /run_remote_command/);
   assert.match(script, /online_ssh_devices/);
+  assert.match(script, /在线设备列表已刷新/);
   assert.match(script, /MapLinkCommandHistory/);
   assert.match(script, /localIP: '127\.0\.0\.1'/);
   assert.match(script, /localPort/);

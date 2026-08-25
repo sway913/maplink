@@ -154,6 +154,10 @@ async function refreshOnlineDevices(force = false) {
       const available = devices.filter((device) => device.clientID !== ownDeviceID);
       onlineDevices = new Map(available.map((device) => [device.id, device]));
       remoteDevice.replaceChildren(option(available.length ? `选择在线设备（${available.length}）` : '暂无其他可远控的在线设备'));
+      setRemoteFeedback(
+        available.length ? `✓ 已读取 ${available.length} 台可远控在线设备。` : '✓ 在线设备列表已刷新，当前没有其他可远控设备。',
+        'success',
+      );
       for (const device of available) {
         remoteDevice.append(option(`${device.name} · ${platformLabel(device.platform)} · :${device.remotePort}`, device.id));
       }
