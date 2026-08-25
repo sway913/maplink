@@ -2,6 +2,8 @@
 
 - 多设备 TCP/UDP 端口映射，可选 TCP、KCP、QUIC 传输。
 - 内置官方 frpc，支持配置保存、启停、状态和日志查看。
+- Windows 与 macOS 均支持双向 SSH 远程控制：每台设备既能开放本机入口，也能在 MapLink 内控制另一台设备。
+- 自动复用已有 SSH 映射，提供连接检测、命令执行、退出码与输出查看。
 - 支持 Windows x64 和 macOS Apple Silicon；服务端可统一查看客户端与代理。
 - 提供 NSIS、便携 ZIP、DMG、APP ZIP 与 SHA-256 校验文件。
 

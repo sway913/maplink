@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
+    io::Read,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::Mutex,
+    thread,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager, RunEvent, State};
 
@@ -58,11 +61,11 @@ struct Auth<'a> {
 #[derive(Serialize)]
 struct Transport<'a> {
     protocol: &'a str,
-    tls: TLS,
+    tls: Tls,
 }
 
 #[derive(Serialize)]
-struct TLS {
+struct Tls {
     enable: bool,
 }
 
@@ -200,6 +203,35 @@ struct ClientStatus {
     log_path: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemotePlatformInfo {
+    platform: &'static str,
+    label: &'static str,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteCommandRequest {
+    host: String,
+    username: String,
+    port: u16,
+    command: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteCommandResult {
+    success: bool,
+    timed_out: bool,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+const REMOTE_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const REMOTE_OUTPUT_LIMIT: usize = 256 * 1024;
+
 struct RuntimePaths {
     binary: PathBuf,
     config: PathBuf,
@@ -241,6 +273,174 @@ fn validate(profile: &Profile) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn validate_remote_request(request: &RemoteCommandRequest) -> Result<(), String> {
+    let host = request.host.trim();
+    if host.is_empty()
+        || host.len() > 253
+        || !host.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | ':' | '[' | ']')
+        })
+        || !host
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphanumeric() || character == '[')
+    {
+        return Err("SSH 主机名或地址无效".into());
+    }
+    let username = request.username.trim();
+    if username.is_empty()
+        || username.len() > 64
+        || !username.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | '\\')
+        })
+    {
+        return Err("SSH 用户名只能包含字母、数字、点、短横线、下划线或域分隔符".into());
+    }
+    if request.port == 0 {
+        return Err("SSH 端口必须在 1-65535 之间".into());
+    }
+    let command = request.command.trim();
+    if command.is_empty() || command.len() > 8192 || command.contains('\0') {
+        return Err("远程命令不能为空，且长度不能超过 8192 个字符".into());
+    }
+    Ok(())
+}
+
+fn ssh_arguments(request: &RemoteCommandRequest) -> Result<Vec<String>, String> {
+    validate_remote_request(request)?;
+    Ok(vec![
+        "-p".into(),
+        request.port.to_string(),
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "ConnectTimeout=8".into(),
+        "-o".into(),
+        "ServerAliveInterval=5".into(),
+        "-o".into(),
+        "ServerAliveCountMax=1".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "--".into(),
+        format!("{}@{}", request.username.trim(), request.host.trim()),
+        request.command.trim().into(),
+    ])
+}
+
+fn read_capped<R: Read>(mut reader: R) -> Result<Vec<u8>, String> {
+    let mut retained = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("读取 SSH 输出失败：{error}"))?;
+        if count == 0 {
+            break;
+        }
+        if retained.len() < REMOTE_OUTPUT_LIMIT {
+            let remaining = REMOTE_OUTPUT_LIMIT - retained.len();
+            retained.extend_from_slice(&buffer[..count.min(remaining)]);
+            truncated |= count > remaining;
+        } else {
+            truncated = true;
+        }
+    }
+    if truncated {
+        retained.extend_from_slice(b"\n[MapLink: output truncated at 256 KB]\n");
+    }
+    Ok(retained)
+}
+
+fn wait_for_remote_child(
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<(ExitStatus, bool), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("等待 SSH 命令失败：{error}"))?
+        {
+            return Ok((status, false));
+        }
+        if Instant::now() >= deadline {
+            child
+                .kill()
+                .map_err(|error| format!("终止超时 SSH 命令失败：{error}"))?;
+            let status = child
+                .wait()
+                .map_err(|error| format!("回收超时 SSH 命令失败：{error}"))?;
+            return Ok((status, true));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn execute_remote_command_with(
+    ssh_program: &Path,
+    request: RemoteCommandRequest,
+    timeout: Duration,
+) -> Result<RemoteCommandResult, String> {
+    let arguments = ssh_arguments(&request)?;
+    let mut child = Command::new(ssh_program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("启动系统 SSH 客户端失败：{error}"))?;
+    let stdout = child.stdout.take().ok_or("无法读取 SSH 标准输出")?;
+    let stderr = child.stderr.take().ok_or("无法读取 SSH 错误输出")?;
+    let stdout_reader = thread::spawn(move || read_capped(stdout));
+    let stderr_reader = thread::spawn(move || read_capped(stderr));
+    let (status, timed_out) = wait_for_remote_child(&mut child, timeout)?;
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "SSH 标准输出读取线程异常".to_string())??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "SSH 错误输出读取线程异常".to_string())??;
+    Ok(RemoteCommandResult {
+        success: status.success() && !timed_out,
+        timed_out,
+        exit_code: status.code(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+#[tauri::command]
+fn remote_platform() -> RemotePlatformInfo {
+    #[cfg(windows)]
+    return RemotePlatformInfo {
+        platform: "windows",
+        label: "Windows",
+    };
+    #[cfg(target_os = "macos")]
+    return RemotePlatformInfo {
+        platform: "macos",
+        label: "macOS",
+    };
+    #[allow(unreachable_code)]
+    RemotePlatformInfo {
+        platform: "linux",
+        label: "Linux",
+    }
+}
+
+#[tauri::command]
+async fn run_remote_command(request: RemoteCommandRequest) -> Result<RemoteCommandResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let program = std::env::var_os("MAPLINK_SSH_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("ssh"));
+        execute_remote_command_with(&program, request, REMOTE_COMMAND_TIMEOUT)
+    })
+    .await
+    .map_err(|error| format!("远程命令任务异常：{error}"))?
 }
 
 fn profile_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -318,7 +518,7 @@ fn render_config(profile: Profile) -> Result<String, String> {
         },
         transport: Transport {
             protocol: &profile.protocol,
-            tls: TLS { enable: true },
+            tls: Tls { enable: true },
         },
         proxies: &profile.proxies,
     })
@@ -406,7 +606,9 @@ pub fn run() {
             start_client,
             stop_client,
             client_status,
-            client_logs
+            client_logs,
+            remote_platform,
+            run_remote_command
         ])
         .build(tauri::generate_context!())
         .expect("error while building MapLink Client");
@@ -478,6 +680,99 @@ mod tests {
             "frp-desktop-sidecar-{}-{suffix}-{sequence}",
             std::process::id(),
         ))
+    }
+
+    fn remote_request(command: &str) -> RemoteCommandRequest {
+        RemoteCommandRequest {
+            host: "demo.maplink.local".into(),
+            username: "codex-user".into(),
+            port: 23022,
+            command: command.into(),
+        }
+    }
+
+    #[test]
+    fn remote_shell_validates_connection_fields_and_keeps_command_as_one_argument() {
+        let request = remote_request("printf MAPLINK_OK; uname -a");
+        let arguments = ssh_arguments(&request).expect("valid SSH request should render");
+        assert_eq!(arguments.last().unwrap(), "printf MAPLINK_OK; uname -a");
+        assert!(arguments.contains(&"BatchMode=yes".to_string()));
+        assert!(arguments.contains(&"StrictHostKeyChecking=accept-new".to_string()));
+        assert!(arguments.contains(&"codex-user@demo.maplink.local".to_string()));
+
+        for (host, username) in [
+            ("demo host", "codex-user"),
+            ("-oProxyCommand=bad", "codex-user"),
+            ("demo.maplink.local", "user;bad"),
+            ("demo.maplink.local", "user@bad"),
+        ] {
+            let invalid = RemoteCommandRequest {
+                host: host.into(),
+                username: username.into(),
+                port: 23022,
+                command: "whoami".into(),
+            };
+            assert!(validate_remote_request(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn remote_shell_caps_large_output() {
+        let oversized = vec![b'x'; REMOTE_OUTPUT_LIMIT + 4096];
+        let output = read_capped(oversized.as_slice()).expect("large output should be readable");
+        assert!(output.starts_with(&vec![b'x'; REMOTE_OUTPUT_LIMIT]));
+        assert!(String::from_utf8_lossy(&output).contains("output truncated at 256 KB"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn remote_shell_executes_through_ssh_program_and_captures_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = sidecar_test_dir();
+        fs::create_dir_all(&dir).expect("test directory should be created");
+        let fake_ssh = dir.join("fake-ssh");
+        fs::write(
+            &fake_ssh,
+            "#!/bin/sh\nprintf 'ARG:%s\\n' \"$@\"\nprintf 'fake ssh stderr\\n' >&2\nexit 0\n",
+        )
+        .expect("fake SSH should be written");
+        fs::set_permissions(&fake_ssh, fs::Permissions::from_mode(0o700))
+            .expect("fake SSH should be executable");
+
+        let result = execute_remote_command_with(
+            &fake_ssh,
+            remote_request("printf MAPLINK_OK; uname -a"),
+            Duration::from_secs(2),
+        )
+        .expect("fake SSH should execute");
+        assert!(result.success);
+        assert!(!result.timed_out);
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.stdout.contains("ARG:printf MAPLINK_OK; uname -a"));
+        assert!(result.stderr.contains("fake ssh stderr"));
+        fs::remove_dir_all(&dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn remote_shell_terminates_commands_after_the_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = sidecar_test_dir();
+        fs::create_dir_all(&dir).expect("test directory should be created");
+        let fake_ssh = dir.join("slow-ssh");
+        fs::write(&fake_ssh, "#!/bin/sh\nexec sleep 5\n").expect("slow SSH should be written");
+        fs::set_permissions(&fake_ssh, fs::Permissions::from_mode(0o700))
+            .expect("slow SSH should be executable");
+
+        let result = execute_remote_command_with(
+            &fake_ssh,
+            remote_request("whoami"),
+            Duration::from_millis(100),
+        )
+        .expect("slow SSH should be terminated cleanly");
+        assert!(!result.success);
+        assert!(result.timed_out);
+        fs::remove_dir_all(&dir).expect("test directory should be removed");
     }
 
     #[test]

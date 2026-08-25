@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
-test('客户端提供 MapLink 关于窗口和完整的开源归属信息', async () => {
+test('客户端把连接配置、远程控制和关于放在顶部 Tab', async () => {
   const [html, script, styles, tauriConfig, packageConfig, cargo] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
@@ -15,8 +15,11 @@ test('客户端提供 MapLink 关于窗口和完整的开源归属信息', async
   ]);
   const versionPattern = tauriConfig.version.replaceAll('.', '\\.');
 
-  assert.match(html, /id="about-button"/);
-  assert.match(html, /<dialog[^>]+id="about-dialog"/);
+  assert.match(html, /class="top-tabs"/);
+  assert.match(html, /data-tab="config"[^>]*>连接配置/);
+  assert.match(html, /data-tab="remote"[^>]*>远程控制/);
+  assert.match(html, /data-tab="about"[^>]*>关于/);
+  assert.match(html, /id="about-page"/);
   assert.match(html, /映链/);
   assert.match(html, /MapLink/);
   assert.match(html, new RegExp(`版本\\s*${versionPattern}`));
@@ -27,11 +30,56 @@ test('客户端提供 MapLink 关于窗口和完整的开源归属信息', async
   assert.doesNotMatch(html, /class="brand">F</);
   assert.doesNotMatch(html, /82\.158\.91\.82/);
   assert.match(html, /id="serverAddr"\s+value=""/);
-  assert.match(script, /showModal\(\)/);
-  assert.match(script, /about-dialog/);
-  assert.match(styles, /\.about-dialog/);
+  assert.match(script, /function switchTab/);
+  assert.doesNotMatch(script, /showModal\(\)/);
+  assert.doesNotMatch(html, /<dialog/);
+  assert.match(styles, /\.top-tabs/);
+  assert.match(styles, /\.about-page/);
   assert.equal(packageConfig.version, tauriConfig.version);
   assert.match(cargo, new RegExp(`version = "${versionPattern}"`));
+});
+
+test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令行', async () => {
+  const [html, script, rust] = await Promise.all([
+    read('../ui/index.html'),
+    read('../ui/app.js'),
+    read('../src-tauri/src/lib.rs'),
+  ]);
+
+  for (const pattern of [
+    /id="remote-page"/,
+    /Windows OpenSSH Server/,
+    /macOS 远程登录/,
+    /开放本机控制入口/,
+    /连接另一台设备/,
+    /id="remote-host-public-port"/,
+    /id="remote-host-feedback"/,
+    /id="remote-target-port"/,
+    /id="add-remote-mapping"/,
+    /id="test-remote-session"/,
+    /id="run-remote-command"/,
+    /id="remote-output"/,
+  ]) assert.match(html, pattern);
+
+  assert.match(script, /ssh -p/);
+  assert.match(script, /echo MAPLINK_REMOTE_OK/);
+  assert.match(script, /服务器地址格式无效/);
+  assert.match(script, /SSH 用户名格式无效/);
+  assert.doesNotMatch(html, /RDP \/ VNC/);
+  assert.match(script, /run_remote_command/);
+  assert.match(script, /localIP: '127\.0\.0\.1'/);
+  assert.match(script, /localPort/);
+  assert.match(script, /remotePort/);
+  assert.match(script, /syncRemoteHostMapping/);
+  assert.match(html, /value="30022"/);
+  assert.match(html, /value="30023"/);
+  assert.doesNotMatch(html, /value="2302[23]"/);
+  assert.match(rust, /async fn run_remote_command/);
+  assert.match(rust, /BatchMode=yes/);
+  assert.match(rust, /ConnectTimeout=8/);
+  assert.match(rust, /REMOTE_COMMAND_TIMEOUT/);
+  assert.match(rust, /REMOTE_OUTPUT_LIMIT/);
+  assert.match(rust, /remote_platform/);
 });
 
 test('桌面窗口使用 MapLink 用户可见名称', async () => {

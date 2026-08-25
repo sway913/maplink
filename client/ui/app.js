@@ -5,8 +5,39 @@ const feedback = document.querySelector('#feedback');
 const runtimeStatus = document.querySelector('#runtime-status');
 const startButton = document.querySelector('#start-client');
 const stopButton = document.querySelector('#stop-client');
-const aboutDialog = document.querySelector('#about-dialog');
+const remoteFeedback = document.querySelector('#remote-feedback');
+const remoteHostFeedback = document.querySelector('#remote-host-feedback');
+const remoteAddress = document.querySelector('#remote-address');
+const remoteOutput = document.querySelector('#remote-output');
+const remoteResultState = document.querySelector('#remote-result-state');
+const remoteResultCode = document.querySelector('#remote-result-code');
 let refreshTimer;
+
+function switchTab(name, focus = false) {
+  for (const button of document.querySelectorAll('[data-tab]')) {
+    const active = button.dataset.tab === name;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+    if (active && focus) button.focus();
+  }
+  for (const panel of document.querySelectorAll('[data-tab-panel]')) {
+    const active = panel.dataset.tabPanel === name;
+    panel.hidden = !active;
+    panel.classList.toggle('active', active);
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+for (const button of document.querySelectorAll('[data-tab]')) {
+  button.addEventListener('click', () => switchTab(button.dataset.tab));
+  button.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    const buttons = [...document.querySelectorAll('[data-tab]')];
+    const direction = event.key === 'ArrowRight' ? 1 : -1;
+    const index = (buttons.indexOf(button) + direction + buttons.length) % buttons.length;
+    switchTab(buttons[index].dataset.tab, true);
+  });
+}
 
 function addProxy(value = {}) {
   const row = template.content.firstElementChild.cloneNode(true);
@@ -15,6 +46,7 @@ function addProxy(value = {}) {
   }
   row.querySelector('[data-remove]').addEventListener('click', () => row.remove());
   list.append(row);
+  return row;
 }
 
 function profile() {
@@ -38,6 +70,18 @@ async function showResult(action, success = '✓ 操作完成') {
   } catch (error) {
     feedback.textContent = `错误：${error}`;
   }
+}
+
+function setRemoteFeedback(message, type = '') {
+  remoteFeedback.textContent = message;
+  remoteFeedback.classList.toggle('success', type === 'success');
+  remoteFeedback.classList.toggle('error', type === 'error');
+}
+
+function setRemoteHostFeedback(message, type = '') {
+  remoteHostFeedback.textContent = message;
+  remoteHostFeedback.classList.toggle('success', type === 'success');
+  remoteHostFeedback.classList.toggle('error', type === 'error');
 }
 
 function paintRuntime(status) {
@@ -69,11 +113,89 @@ async function refreshRuntime() {
   }
 }
 
+function remoteRequest(command = '') {
+  const host = document.querySelector('#serverAddr').value.trim();
+  const username = document.querySelector('#remote-user').value.trim();
+  const port = Number(document.querySelector('#remote-target-port').value);
+  if (!host) throw new Error('请先在“连接配置”填写服务器地址');
+  if (host.length > 253 || !/^[A-Za-z0-9[\]][A-Za-z0-9.:[\]-]*$/.test(host)) throw new Error('服务器地址格式无效');
+  if (!/^[A-Za-z0-9._\\-]{1,64}$/.test(username)) throw new Error('SSH 用户名格式无效');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('公网 SSH 端口无效');
+  return { host, username, port, command };
+}
+
+function sshCommand() {
+  const request = remoteRequest();
+  return `ssh -p ${request.port} ${request.username}@${request.host}`;
+}
+
+function updateRemoteAddress() {
+  try {
+    remoteAddress.textContent = sshCommand();
+  } catch {
+    remoteAddress.textContent = '请填写服务器地址和 SSH 用户名';
+  }
+}
+
+function syncRemoteHostMapping(proxies) {
+  const sshProxy = proxies.find((proxy) => proxy.type === 'tcp'
+    && Number(proxy.localPort) === 22
+    && ['127.0.0.1', 'localhost'].includes(proxy.localIP));
+  if (!sshProxy) return;
+  document.querySelector('#remote-host-name').value = sshProxy.name;
+  document.querySelector('#remote-host-local-port').value = sshProxy.localPort;
+  document.querySelector('#remote-host-public-port').value = sshProxy.remotePort;
+  setRemoteHostFeedback(`已复用现有 SSH 映射：${sshProxy.name} → ${sshProxy.remotePort}`, 'success');
+}
+
+function updateRemoteGuide() {
+  const remoteOS = document.querySelector('#remote-os').value;
+  const steps = document.querySelector('#remote-steps');
+  if (remoteOS === 'windows') {
+    steps.innerHTML = '<li>对方机器需已启动 Windows OpenSSH Server。</li><li>双方各自在 MapLink 添加本机 SSH 映射并启动 frpc。</li><li>在这里填写对方端口，即可直接检测和执行命令。</li>';
+    document.querySelector('#remote-command').placeholder = '例如：powershell -NoProfile -Command "Get-ComputerInfo"';
+  } else {
+    steps.innerHTML = '<li>对方机器需已开启 macOS“远程登录”。</li><li>双方各自在 MapLink 添加本机 SSH 映射并启动 frpc。</li><li>在这里填写对方端口，即可直接检测和执行命令。</li>';
+    document.querySelector('#remote-command').placeholder = '例如：uname -a';
+  }
+}
+
+function addRemoteMapping() {
+  const name = document.querySelector('#remote-host-name').value.trim();
+  const localPort = Number(document.querySelector('#remote-host-local-port').value);
+  const publicPort = Number(document.querySelector('#remote-host-public-port').value);
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) throw new Error('映射名称只能包含字母、数字、短横线和下划线');
+  for (const [label, value] of [['本机 SSH 端口', localPort], ['公网 SSH 端口', publicPort]]) {
+    if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Error(`${label}无效`);
+  }
+  let row = [...list.querySelectorAll('.proxy-row')].find((candidate) => candidate.querySelector('[data-field="name"]').value.trim() === name);
+  if (!row) row = addProxy();
+  const values = { name, type: 'tcp', localIP: '127.0.0.1', localPort, remotePort: publicPort };
+  for (const input of row.querySelectorAll('[data-field]')) input.value = values[input.dataset.field];
+  feedback.textContent = '✓ SSH 映射已加入，请保存配置并启动 frpc';
+  setRemoteHostFeedback(`本机 SSH 已映射到公网端口 ${publicPort}，请把这个端口告诉另一台设备。`, 'success');
+  switchTab('config');
+  window.setTimeout(() => row.scrollIntoView({ behavior: 'smooth', block: 'center' }), 180);
+}
+
+async function runRemote(command) {
+  const request = remoteRequest(command);
+  remoteResultState.textContent = '正在连接…';
+  remoteResultState.className = '';
+  remoteResultCode.textContent = '退出码 —';
+  remoteOutput.textContent = '等待远端响应…';
+  const result = await invoke('run_remote_command', { request });
+  remoteResultState.textContent = result.timedOut ? '执行超时' : result.success ? '执行成功' : '执行失败';
+  remoteResultState.className = result.success ? 'success' : 'error';
+  remoteResultCode.textContent = `退出码 ${result.exitCode ?? '—'}`;
+  const sections = [];
+  if (result.stdout) sections.push(result.stdout);
+  if (result.stderr) sections.push(`[stderr]\n${result.stderr}`);
+  remoteOutput.textContent = sections.join('\n\n') || '命令没有输出。';
+  return result;
+}
+
 document.querySelector('#add-proxy').addEventListener('click', () => addProxy());
-document.querySelector('#about-button').addEventListener('click', () => aboutDialog.showModal());
-aboutDialog.addEventListener('click', (event) => {
-  if (event.target === aboutDialog) aboutDialog.close();
-});
 document.querySelector('#profile-form').addEventListener('submit', (event) => {
   event.preventDefault(); showResult(() => invoke('save_profile', { profile: profile() }));
 });
@@ -93,11 +215,65 @@ stopButton.addEventListener('click', () => showResult(async () => {
   await refreshRuntime();
 }, '✓ 原版 frpc 已停止'));
 
+document.querySelector('#serverAddr').addEventListener('input', updateRemoteAddress);
+document.querySelector('#remote-user').addEventListener('input', updateRemoteAddress);
+document.querySelector('#remote-target-port').addEventListener('input', updateRemoteAddress);
+document.querySelector('#remote-os').addEventListener('change', updateRemoteGuide);
+document.querySelector('#add-remote-mapping').addEventListener('click', () => {
+  try { addRemoteMapping(); } catch (error) { setRemoteHostFeedback(`错误：${error.message || error}`, 'error'); }
+});
+document.querySelector('#copy-ssh-command').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(sshCommand());
+    setRemoteFeedback('✓ SSH 命令已复制，可直接交给 Codex 或终端执行。', 'success');
+  } catch (error) {
+    setRemoteFeedback(`错误：${error.message || error}`, 'error');
+  }
+});
+document.querySelector('#test-remote-session').addEventListener('click', async () => {
+  try {
+    const result = await runRemote('echo MAPLINK_REMOTE_OK');
+    const verified = result.success && result.stdout.includes('MAPLINK_REMOTE_OK');
+    setRemoteFeedback(verified ? '✓ SSH 密钥连接验证通过。' : '连接建立，但验证输出不符合预期。', verified ? 'success' : 'error');
+  } catch (error) {
+    setRemoteFeedback(`连接失败：${error}`, 'error');
+    remoteOutput.textContent = String(error);
+  }
+});
+document.querySelector('#run-remote-command').addEventListener('click', async () => {
+  const command = document.querySelector('#remote-command').value.trim();
+  if (!command) { setRemoteFeedback('错误：请输入要执行的远程命令', 'error'); return; }
+  try {
+    const result = await runRemote(command);
+    setRemoteFeedback(result.success ? '✓ 远程命令执行完成。' : '远程命令返回非零退出码。', result.success ? 'success' : 'error');
+  } catch (error) {
+    setRemoteFeedback(`执行失败：${error}`, 'error');
+    remoteOutput.textContent = String(error);
+  }
+});
+
 invoke('load_profile').then((saved) => {
-  if (!saved) { addProxy({ name: 'ssh-home', type: 'tcp', localIP: '127.0.0.1', localPort: 22, remotePort: 30022 }); return; }
+  if (!saved) {
+    const proxies = [{ name: 'ssh-home', type: 'tcp', localIP: '127.0.0.1', localPort: 22, remotePort: 30022 }];
+    proxies.forEach(addProxy);
+    syncRemoteHostMapping(proxies);
+    updateRemoteAddress();
+    return;
+  }
   for (const key of ['deviceID', 'serverAddr', 'serverPort', 'token', 'protocol']) document.querySelector(`#${key}`).value = saved[key];
   saved.proxies.forEach(addProxy);
-}).catch(() => addProxy());
+  syncRemoteHostMapping(saved.proxies);
+  updateRemoteAddress();
+}).catch(() => { addProxy(); updateRemoteAddress(); });
+
+invoke('remote_platform').then((platform) => {
+  document.querySelector('#remote-platform').textContent = `${platform.label} 客户端`;
+  document.querySelector('#remote-os').value = platform.platform;
+  updateRemoteGuide();
+}).catch(() => {
+  document.querySelector('#remote-platform').textContent = '桌面客户端';
+  updateRemoteGuide();
+});
 
 refreshRuntime();
 refreshTimer = window.setInterval(refreshRuntime, 2500);
