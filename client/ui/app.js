@@ -11,7 +11,15 @@ const remoteAddress = document.querySelector('#remote-address');
 const remoteOutput = document.querySelector('#remote-output');
 const remoteResultState = document.querySelector('#remote-result-state');
 const remoteResultCode = document.querySelector('#remote-result-code');
+const remoteDevice = document.querySelector('#remote-device');
+const remoteCommand = document.querySelector('#remote-command');
+const remoteCommandHistory = document.querySelector('#remote-command-history');
+const commandHistory = new window.MapLinkCommandHistory.CommandHistory(window.localStorage);
 let refreshTimer;
+let runtimeRunning = false;
+let lastDeviceRefresh = 0;
+let deviceRefreshPromise;
+let onlineDevices = new Map();
 
 function switchTab(name, focus = false) {
   for (const button of document.querySelectorAll('[data-tab]')) {
@@ -26,6 +34,7 @@ function switchTab(name, focus = false) {
     panel.classList.toggle('active', active);
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (name === 'remote') refreshOnlineDevices(true);
 }
 
 for (const button of document.querySelectorAll('[data-tab]')) {
@@ -54,8 +63,10 @@ function profile() {
     deviceID: document.querySelector('#deviceID').value.trim(),
     serverAddr: document.querySelector('#serverAddr').value.trim(),
     serverPort: Number(document.querySelector('#serverPort').value),
+    managerPort: Number(document.querySelector('#managerPort').value),
     token: document.querySelector('#token').value,
     protocol: document.querySelector('#protocol').value,
+    sshUser: document.querySelector('#sshUser').value.trim(),
     proxies: [...list.querySelectorAll('.proxy-row')].map((row) => Object.fromEntries(
       [...row.querySelectorAll('[data-field]')].map((input) => [input.dataset.field, input.type === 'number' ? Number(input.value) : input.value.trim()]),
     )),
@@ -85,6 +96,7 @@ function setRemoteHostFeedback(message, type = '') {
 }
 
 function paintRuntime(status) {
+  runtimeRunning = status.running;
   runtimeStatus.classList.toggle('running', status.running);
   runtimeStatus.classList.toggle('missing', !status.installed);
   const frpcLabel = `frpc ${status.frpcVersion || '0.71.0'}`;
@@ -98,6 +110,70 @@ function paintRuntime(status) {
   stopButton.disabled = !status.running;
 }
 
+function option(text, value = '') {
+  const item = document.createElement('option');
+  item.value = value;
+  item.textContent = text;
+  return item;
+}
+
+function platformLabel(platform) {
+  if (platform === 'windows') return 'Windows';
+  if (platform === 'macos') return 'macOS';
+  return platform || '未知系统';
+}
+
+function applySelectedDevice() {
+  const selected = onlineDevices.get(remoteDevice.value);
+  if (!selected) return;
+  document.querySelector('#remote-target-port').value = selected.remotePort;
+  if (['windows', 'macos'].includes(selected.platform)) {
+    document.querySelector('#remote-os').value = selected.platform;
+  }
+  if (selected.sshUser) document.querySelector('#remote-user').value = selected.sshUser;
+  updateRemoteGuide();
+  updateRemoteAddress();
+  setRemoteFeedback(`✓ 已选择 ${selected.name}，SSH 公网端口 ${selected.remotePort}。`, 'success');
+}
+
+async function refreshOnlineDevices(force = false) {
+  if (deviceRefreshPromise) return deviceRefreshPromise;
+  if (!force && (!runtimeRunning || Date.now() - lastDeviceRefresh < 10000)) return;
+  const currentProfile = profile();
+  if (!currentProfile.serverAddr || currentProfile.token.length < 16) {
+    remoteDevice.replaceChildren(option('请先填写服务器地址和 Token'));
+    return;
+  }
+  const selectedID = remoteDevice.value;
+  remoteDevice.disabled = true;
+  if (!selectedID) remoteDevice.replaceChildren(option('正在读取在线设备…'));
+  deviceRefreshPromise = invoke('online_ssh_devices', { profile: currentProfile })
+    .then((devices) => {
+      lastDeviceRefresh = Date.now();
+      const ownDeviceID = currentProfile.deviceID;
+      const available = devices.filter((device) => device.clientID !== ownDeviceID);
+      onlineDevices = new Map(available.map((device) => [device.id, device]));
+      remoteDevice.replaceChildren(option(available.length ? `选择在线设备（${available.length}）` : '暂无其他可远控的在线设备'));
+      for (const device of available) {
+        remoteDevice.append(option(`${device.name} · ${platformLabel(device.platform)} · :${device.remotePort}`, device.id));
+      }
+      if (onlineDevices.has(selectedID)) remoteDevice.value = selectedID;
+      else if (available.length === 1) {
+        remoteDevice.value = available[0].id;
+        applySelectedDevice();
+      }
+    })
+    .catch((error) => {
+      remoteDevice.replaceChildren(option('在线设备读取失败，点击刷新重试'));
+      if (force) setRemoteFeedback(`设备读取失败：${error}`, 'error');
+    })
+    .finally(() => {
+      remoteDevice.disabled = false;
+      deviceRefreshPromise = undefined;
+    });
+  return deviceRefreshPromise;
+}
+
 async function refreshRuntime() {
   try {
     const [status, logs] = await Promise.all([
@@ -106,6 +182,7 @@ async function refreshRuntime() {
     ]);
     paintRuntime(status);
     document.querySelector('#client-logs').textContent = logs || '暂无日志';
+    if (status.running) refreshOnlineDevices();
   } catch (error) {
     runtimeStatus.textContent = '状态读取失败';
     runtimeStatus.classList.add('missing');
@@ -160,6 +237,17 @@ function updateRemoteGuide() {
   }
 }
 
+function refreshCommandHistory() {
+  const entries = commandHistory.list();
+  remoteCommandHistory.replaceChildren(option(entries.length ? `选择历史命令（${entries.length}）` : '暂无历史命令'));
+  entries.forEach((entry, index) => {
+    const label = entry.replace(/\s+/g, ' ').slice(0, 120);
+    remoteCommandHistory.append(option(label, String(index)));
+  });
+  remoteCommandHistory.disabled = entries.length === 0;
+  document.querySelector('#clear-command-history').disabled = entries.length === 0;
+}
+
 function addRemoteMapping() {
   const name = document.querySelector('#remote-host-name').value.trim();
   const localPort = Number(document.querySelector('#remote-host-local-port').value);
@@ -208,6 +296,7 @@ startButton.addEventListener('click', () => showResult(async () => {
   const status = await invoke('start_client', { profile: profile() });
   paintRuntime(status);
   await refreshRuntime();
+  await refreshOnlineDevices(true);
 }, '✓ 原版 frpc 已启动'));
 stopButton.addEventListener('click', () => showResult(async () => {
   const status = await invoke('stop_client');
@@ -216,9 +305,13 @@ stopButton.addEventListener('click', () => showResult(async () => {
 }, '✓ 原版 frpc 已停止'));
 
 document.querySelector('#serverAddr').addEventListener('input', updateRemoteAddress);
+document.querySelector('#managerPort').addEventListener('input', () => { lastDeviceRefresh = 0; });
+document.querySelector('#token').addEventListener('input', () => { lastDeviceRefresh = 0; });
 document.querySelector('#remote-user').addEventListener('input', updateRemoteAddress);
 document.querySelector('#remote-target-port').addEventListener('input', updateRemoteAddress);
 document.querySelector('#remote-os').addEventListener('change', updateRemoteGuide);
+remoteDevice.addEventListener('change', applySelectedDevice);
+document.querySelector('#refresh-remote-devices').addEventListener('click', () => refreshOnlineDevices(true));
 document.querySelector('#add-remote-mapping').addEventListener('click', () => {
   try { addRemoteMapping(); } catch (error) { setRemoteHostFeedback(`错误：${error.message || error}`, 'error'); }
 });
@@ -241,14 +334,46 @@ document.querySelector('#test-remote-session').addEventListener('click', async (
   }
 });
 document.querySelector('#run-remote-command').addEventListener('click', async () => {
-  const command = document.querySelector('#remote-command').value.trim();
+  const command = remoteCommand.value.trim();
   if (!command) { setRemoteFeedback('错误：请输入要执行的远程命令', 'error'); return; }
+  commandHistory.record(command);
+  refreshCommandHistory();
   try {
     const result = await runRemote(command);
     setRemoteFeedback(result.success ? '✓ 远程命令执行完成。' : '远程命令返回非零退出码。', result.success ? 'success' : 'error');
   } catch (error) {
     setRemoteFeedback(`执行失败：${error}`, 'error');
     remoteOutput.textContent = String(error);
+  }
+});
+
+remoteCommandHistory.addEventListener('change', () => {
+  if (remoteCommandHistory.value === '') return;
+  const selected = commandHistory.list()[Number(remoteCommandHistory.value)];
+  if (selected !== undefined) {
+    remoteCommand.value = selected;
+    remoteCommand.focus();
+    remoteCommand.setSelectionRange(selected.length, selected.length);
+  }
+  remoteCommandHistory.value = '';
+});
+document.querySelector('#clear-command-history').addEventListener('click', () => {
+  commandHistory.clear();
+  refreshCommandHistory();
+  setRemoteFeedback('本机命令历史已清空。');
+});
+remoteCommand.addEventListener('input', () => commandHistory.resetNavigation());
+remoteCommand.addEventListener('keydown', (event) => {
+  const atStart = remoteCommand.selectionStart === 0 && remoteCommand.selectionEnd === 0;
+  const atEnd = remoteCommand.selectionStart === remoteCommand.value.length && remoteCommand.selectionEnd === remoteCommand.value.length;
+  if (event.key === 'ArrowUp' && (event.altKey || atStart)) {
+    event.preventDefault();
+    remoteCommand.value = commandHistory.previous(remoteCommand.value);
+    remoteCommand.setSelectionRange(remoteCommand.value.length, remoteCommand.value.length);
+  } else if (event.key === 'ArrowDown' && (event.altKey || atEnd)) {
+    event.preventDefault();
+    remoteCommand.value = commandHistory.next();
+    remoteCommand.setSelectionRange(remoteCommand.value.length, remoteCommand.value.length);
   }
 });
 
@@ -260,15 +385,18 @@ invoke('load_profile').then((saved) => {
     updateRemoteAddress();
     return;
   }
-  for (const key of ['deviceID', 'serverAddr', 'serverPort', 'token', 'protocol']) document.querySelector(`#${key}`).value = saved[key];
+  for (const key of ['deviceID', 'serverAddr', 'serverPort', 'managerPort', 'token', 'protocol']) document.querySelector(`#${key}`).value = saved[key];
+  if (saved.sshUser) document.querySelector('#sshUser').value = saved.sshUser;
   saved.proxies.forEach(addProxy);
   syncRemoteHostMapping(saved.proxies);
   updateRemoteAddress();
+  refreshOnlineDevices(true);
 }).catch(() => { addProxy(); updateRemoteAddress(); });
 
 invoke('remote_platform').then((platform) => {
   document.querySelector('#remote-platform').textContent = `${platform.label} 客户端`;
   document.querySelector('#remote-os').value = platform.platform;
+  if (!document.querySelector('#sshUser').value) document.querySelector('#sshUser').value = platform.username || '';
   updateRemoteGuide();
 }).catch(() => {
   document.querySelector('#remote-platform').textContent = '桌面客户端';
@@ -276,5 +404,6 @@ invoke('remote_platform').then((platform) => {
 });
 
 refreshRuntime();
+refreshCommandHistory();
 refreshTimer = window.setInterval(refreshRuntime, 2500);
 window.addEventListener('beforeunload', () => window.clearInterval(refreshTimer));

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"frp-manager/internal/auth"
 	"frp-manager/internal/frp"
@@ -38,6 +41,94 @@ func integrationServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	return server
+}
+
+func TestClientDeviceDiscoveryRequiresTokenAndReturnsOnlineSSHEndpoints(t *testing.T) {
+	if signature := clientDeviceSignature("0123456789abcdef", 1700000000); signature != "f2b1286b57ce28ed4e1a9cca5d12a1bebb6cf22d876d3a0cb92bf6abe9487d0a" {
+		t.Fatalf("unexpected HMAC signature: %s", signature)
+	}
+	server := integrationServer(t)
+	dashboard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "internal-user" || password != "0123456789abcdef" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/clients":
+			_, _ = w.Write([]byte(`[
+				{"key":"alpha.alpha","user":"alpha","clientID":"alpha","hostname":"Office Mac","online":true},
+				{"key":"beta.beta","user":"beta","clientID":"beta","hostname":"Windows PC","online":true},
+				{"key":"offline.offline","user":"offline","clientID":"offline","hostname":"Offline PC","online":false}
+			]`))
+		case "/api/proxy/tcp":
+			_, _ = w.Write([]byte(`{"proxies":[
+				{"name":"alpha.remote-shell","user":"alpha","clientID":"alpha","status":"online","conf":{"localPort":22,"remotePort":30022,"metadatas":{"maplinkPlatform":"macos","maplinkSSHUser":"alice"}}},
+				{"name":"beta.web","user":"beta","clientID":"beta","status":"online","conf":{"localPort":8080,"remotePort":38080}},
+				{"name":"offline.remote-shell","user":"offline","clientID":"offline","status":"online","conf":{"localPort":22,"remotePort":30024}}
+			]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer dashboard.Close()
+	parsed, err := url.Parse(dashboard.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, portText, found := strings.Cut(parsed.Host, ":")
+	if !found {
+		t.Fatalf("dashboard URL has no port: %s", dashboard.URL)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := server.options.Store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.DashboardPort = port
+	if err := server.options.Store.Apply(settings, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, token := range map[string]string{"missing": "", "wrong": "wrong-token-value"} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/api/client/devices", nil)
+			if token != "" {
+				timestamp := time.Now().Unix()
+				request.Header.Set("X-MapLink-Timestamp", strconv.FormatInt(timestamp, 10))
+				request.Header.Set("X-MapLink-Signature", clientDeviceSignature(token, timestamp))
+			}
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401, got %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/client/devices", nil)
+	timestamp := time.Now().Unix()
+	request.Header.Set("X-MapLink-Timestamp", strconv.FormatInt(timestamp, 10))
+	request.Header.Set("X-MapLink-Signature", clientDeviceSignature("0123456789abcdef", timestamp))
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{"Office Mac", `"remotePort":30022`, `"platform":"macos"`, `"sshUser":"alice"`} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("missing %q in %s", expected, body)
+		}
+	}
+	for _, forbidden := range []string{"0123456789abcdef", "Windows PC", "Offline PC", "38080", "30024"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("unexpected %q in %s", forbidden, body)
+		}
+	}
 }
 
 func TestCredentialsGenerateDistinctDeviceConfigOnSelectedControlPort(t *testing.T) {

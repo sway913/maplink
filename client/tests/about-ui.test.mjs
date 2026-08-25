@@ -55,6 +55,8 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
     /id="remote-host-public-port"/,
     /id="remote-host-feedback"/,
     /id="remote-target-port"/,
+    /id="remote-device"/,
+    /id="remote-command-history"/,
     /id="add-remote-mapping"/,
     /id="test-remote-session"/,
     /id="run-remote-command"/,
@@ -67,6 +69,8 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.match(script, /SSH 用户名格式无效/);
   assert.doesNotMatch(html, /RDP \/ VNC/);
   assert.match(script, /run_remote_command/);
+  assert.match(script, /online_ssh_devices/);
+  assert.match(script, /MapLinkCommandHistory/);
   assert.match(script, /localIP: '127\.0\.0\.1'/);
   assert.match(script, /localPort/);
   assert.match(script, /remotePort/);
@@ -80,6 +84,8 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.match(rust, /REMOTE_COMMAND_TIMEOUT/);
   assert.match(rust, /REMOTE_OUTPUT_LIMIT/);
   assert.match(rust, /remote_platform/);
+  assert.match(rust, /hide_windows_console\(&mut command\)/);
+  assert.match(rust, /online_ssh_devices/);
 });
 
 test('桌面窗口使用 MapLink 用户可见名称', async () => {

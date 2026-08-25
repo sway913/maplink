@@ -80,6 +80,7 @@ jobs:
           npm ci
           npm test
           node --check ui/app.js
+          node --check ui/command-history.js
 
       - name: Test Rust client
         working-directory: client/src-tauri
@@ -156,6 +157,7 @@ jobs:
           npm ci
           npm test
           node --check ui/app.js
+          node --check ui/command-history.js
 
       - name: Test Rust client
         working-directory: client/src-tauri

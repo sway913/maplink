@@ -1,12 +1,15 @@
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::Mutex,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager, RunEvent, State};
 
@@ -31,8 +34,12 @@ struct Profile {
     device_id: String,
     server_addr: String,
     server_port: u16,
+    #[serde(default = "default_manager_port")]
+    manager_port: u16,
     token: String,
     protocol: String,
+    #[serde(default)]
+    ssh_user: String,
     proxies: Vec<Proxy>,
 }
 
@@ -47,7 +54,21 @@ struct FRPCConfig<'a> {
     login_fail_exit: bool,
     auth: Auth<'a>,
     transport: Transport<'a>,
-    proxies: &'a [Proxy],
+    proxies: Vec<FRPCProxy<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FRPCProxy<'a> {
+    name: &'a str,
+    #[serde(rename = "type")]
+    proxy_type: &'a str,
+    #[serde(rename = "localIP")]
+    local_ip: &'a str,
+    local_port: u16,
+    remote_port: u16,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    metadatas: BTreeMap<&'static str, String>,
 }
 
 #[derive(Serialize)]
@@ -123,12 +144,7 @@ impl RuntimeState {
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
+        hide_windows_console(&mut command);
         let child = command
             .spawn()
             .map_err(|error| format!("启动原版 frpc 失败：{error}"))?;
@@ -208,6 +224,25 @@ struct ClientStatus {
 struct RemotePlatformInfo {
     platform: &'static str,
     label: &'static str,
+    username: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OnlineSSHDevice {
+    id: String,
+    name: String,
+    client_id: String,
+    hostname: String,
+    proxy_name: String,
+    remote_port: u16,
+    platform: String,
+    ssh_user: String,
+}
+
+#[derive(Deserialize)]
+struct OnlineSSHDevicesResponse {
+    devices: Vec<OnlineSSHDevice>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -242,6 +277,41 @@ fn default_device_id() -> String {
     "device-01".into()
 }
 
+fn default_manager_port() -> u16 {
+    7400
+}
+
+fn local_platform() -> &'static str {
+    #[cfg(windows)]
+    return "windows";
+    #[cfg(target_os = "macos")]
+    return "macos";
+    #[allow(unreachable_code)]
+    "linux"
+}
+
+fn local_username() -> String {
+    let keys: &[&str] = if cfg!(windows) {
+        &["USERNAME", "USER"]
+    } else {
+        &["USER", "USERNAME"]
+    };
+    keys.iter()
+        .find_map(|key| std::env::var(key).ok())
+        .unwrap_or_default()
+}
+
+fn hide_windows_console(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 fn validate(profile: &Profile) -> Result<(), String> {
     if profile.device_id.is_empty()
         || profile.device_id.len() > 32
@@ -255,11 +325,22 @@ fn validate(profile: &Profile) -> Result<(), String> {
     if profile.server_addr.trim().is_empty() {
         return Err("服务器地址不能为空".into());
     }
+    if profile.manager_port == 0 {
+        return Err("管理端口必须在 1-65535 之间".into());
+    }
     if profile.token.len() < 16 {
         return Err("Token 至少需要 16 个字符".into());
     }
     if !matches!(profile.protocol.as_str(), "tcp" | "kcp" | "quic") {
         return Err("不支持的传输协议".into());
+    }
+    if !profile.ssh_user.is_empty()
+        && (profile.ssh_user.len() > 64
+            || !profile.ssh_user.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | '\\')
+            }))
+    {
+        return Err("本机 SSH 用户名格式无效".into());
     }
     if profile.proxies.is_empty() {
         return Err("至少需要一条端口映射".into());
@@ -385,11 +466,14 @@ fn execute_remote_command_with(
     timeout: Duration,
 ) -> Result<RemoteCommandResult, String> {
     let arguments = ssh_arguments(&request)?;
-    let mut child = Command::new(ssh_program)
+    let mut command = Command::new(ssh_program);
+    command
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_windows_console(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("启动系统 SSH 客户端失败：{error}"))?;
     let stdout = child.stdout.take().ok_or("无法读取 SSH 标准输出")?;
@@ -418,17 +502,83 @@ fn remote_platform() -> RemotePlatformInfo {
     return RemotePlatformInfo {
         platform: "windows",
         label: "Windows",
+        username: local_username(),
     };
     #[cfg(target_os = "macos")]
     return RemotePlatformInfo {
         platform: "macos",
         label: "macOS",
+        username: local_username(),
     };
     #[allow(unreachable_code)]
     RemotePlatformInfo {
         platform: "linux",
         label: "Linux",
+        username: local_username(),
     }
+}
+
+fn manager_host(host: &str) -> String {
+    let host = host.trim();
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+fn device_discovery_signature(token: &str, timestamp: u64) -> Result<String, String> {
+    let payload = format!("GET\n/api/client/devices\n{timestamp}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(token.as_bytes())
+        .map_err(|_| "Token 无法用于设备查询签名".to_string())?;
+    mac.update(payload.as_bytes());
+    Ok(mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+#[tauri::command]
+async fn online_ssh_devices(profile: Profile) -> Result<Vec<OnlineSSHDevice>, String> {
+    validate(&profile)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "系统时间无效，无法查询在线设备".to_string())?
+        .as_secs();
+    let signature = device_discovery_signature(&profile.token, timestamp)?;
+    let url = format!(
+        "https://{}:{}/api/client/devices",
+        manager_host(&profile.server_addr),
+        profile.manager_port
+    );
+    // MapLink Server installs a local/self-signed certificate by default. The
+    // request sends a short-lived HMAC proof instead of the FRP token itself.
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|error| format!("初始化在线设备查询失败：{error}"))?;
+    let response = client
+        .get(url)
+        .header("X-MapLink-Timestamp", timestamp.to_string())
+        .header("X-MapLink-Signature", signature)
+        .header(reqwest::header::CACHE_CONTROL, "no-store")
+        .send()
+        .await
+        .map_err(|error| format!("无法连接 MapLink 管理服务：{error}"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("管理服务拒绝访问，请检查 Token".into());
+    }
+    if !response.status().is_success() {
+        return Err(format!("在线设备查询失败：HTTP {}", response.status()));
+    }
+    let body = response
+        .json::<OnlineSSHDevicesResponse>()
+        .await
+        .map_err(|error| format!("在线设备响应无效：{error}"))?;
+    Ok(body.devices)
 }
 
 #[tauri::command]
@@ -505,6 +655,27 @@ fn write_runtime_config(path: &Path, contents: &str) -> Result<(), String> {
 #[tauri::command]
 fn render_config(profile: Profile) -> Result<String, String> {
     validate(&profile)?;
+    let proxies = profile
+        .proxies
+        .iter()
+        .map(|proxy| {
+            let mut metadatas = BTreeMap::new();
+            if proxy.proxy_type == "tcp" && proxy.local_port == 22 {
+                metadatas.insert("maplinkPlatform", local_platform().to_string());
+                if !profile.ssh_user.is_empty() {
+                    metadatas.insert("maplinkSSHUser", profile.ssh_user.clone());
+                }
+            }
+            FRPCProxy {
+                name: &proxy.name,
+                proxy_type: &proxy.proxy_type,
+                local_ip: &proxy.local_ip,
+                local_port: proxy.local_port,
+                remote_port: proxy.remote_port,
+                metadatas,
+            }
+        })
+        .collect();
     toml::to_string_pretty(&FRPCConfig {
         client_id: &profile.device_id,
         user: &profile.device_id,
@@ -520,7 +691,7 @@ fn render_config(profile: Profile) -> Result<String, String> {
             protocol: &profile.protocol,
             tls: Tls { enable: true },
         },
-        proxies: &profile.proxies,
+        proxies,
     })
     .map_err(|error| error.to_string())
 }
@@ -608,6 +779,7 @@ pub fn run() {
             client_status,
             client_logs,
             remote_platform,
+            online_ssh_devices,
             run_remote_command
         ])
         .build(tauri::generate_context!())
@@ -634,8 +806,10 @@ mod tests {
             device_id: "office-pc".into(),
             server_addr: "203.0.113.10".into(),
             server_port: 7000,
+            manager_port: 7400,
             token: "0123456789abcdef".into(),
             protocol: "tcp".into(),
+            ssh_user: "codex-user".into(),
             proxies: vec![
                 Proxy {
                     name: "ssh".into(),
@@ -665,9 +839,34 @@ mod tests {
             "localIP = \"127.0.0.1\"",
             "remotePort = 30022",
             "remotePort = 30053",
+            "maplinkPlatform",
+            "maplinkSSHUser = \"codex-user\"",
         ] {
             assert!(config.contains(expected), "missing {expected}:\n{config}");
         }
+    }
+
+    #[test]
+    fn old_profiles_gain_safe_online_device_defaults() {
+        let profile: Profile = toml::from_str(
+            r#"
+deviceID = "legacy-pc"
+serverAddr = "203.0.113.10"
+serverPort = 7000
+token = "0123456789abcdef"
+protocol = "tcp"
+
+[[proxies]]
+name = "ssh"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 22
+remotePort = 30022
+"#,
+        )
+        .expect("v0.3 profile should remain readable");
+        assert_eq!(profile.manager_port, 7400);
+        assert!(profile.ssh_user.is_empty());
     }
 
     fn sidecar_test_dir() -> PathBuf {
@@ -714,6 +913,14 @@ mod tests {
             };
             assert!(validate_remote_request(&invalid).is_err());
         }
+    }
+
+    #[test]
+    fn online_device_request_uses_a_short_lived_hmac_proof() {
+        assert_eq!(
+            device_discovery_signature("0123456789abcdef", 1_700_000_000).unwrap(),
+            "f2b1286b57ce28ed4e1a9cca5d12a1bebb6cf22d876d3a0cb92bf6abe9487d0a"
+        );
     }
 
     #[test]

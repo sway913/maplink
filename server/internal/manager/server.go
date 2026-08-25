@@ -1,8 +1,13 @@
 package manager
 
 import (
+	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,6 +119,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/logs", s.authenticated(s.logs))
 	s.mux.HandleFunc("GET /api/ports", s.authenticated(s.ports))
 	s.mux.HandleFunc("GET /api/frp/{resource...}", s.authenticated(s.frpAPI))
+	s.mux.HandleFunc("GET /api/client/devices", s.onlineSSHDevices)
 	s.mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -551,6 +558,152 @@ var allowedFRPResources = map[string]bool{
 	"serverinfo": true, "clients": true, "proxy/tcp": true, "proxy/udp": true,
 	"proxy/http": true, "proxy/https": true, "proxy/stcp": true, "proxy/sudp": true,
 	"proxy/xtcp": true, "proxy/tcpmux": true,
+}
+
+type frpClientInfo struct {
+	Key      string `json:"key"`
+	User     string `json:"user"`
+	ClientID string `json:"clientID"`
+	Hostname string `json:"hostname"`
+	Online   bool   `json:"online"`
+}
+
+type frpTCPProxyInfo struct {
+	Name     string `json:"name"`
+	User     string `json:"user"`
+	ClientID string `json:"clientID"`
+	Status   string `json:"status"`
+	Conf     struct {
+		LocalPort  int               `json:"localPort"`
+		RemotePort int               `json:"remotePort"`
+		Metadatas  map[string]string `json:"metadatas"`
+	} `json:"conf"`
+}
+
+type frpTCPProxyList struct {
+	Proxies []frpTCPProxyInfo `json:"proxies"`
+}
+
+type onlineSSHDevice struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	ClientID   string `json:"clientID"`
+	Hostname   string `json:"hostname"`
+	ProxyName  string `json:"proxyName"`
+	RemotePort int    `json:"remotePort"`
+	Platform   string `json:"platform"`
+	SSHUser    string `json:"sshUser"`
+}
+
+func clientKey(user, clientID string) string {
+	return user + "\x00" + clientID
+}
+
+func clientDeviceSignature(token string, timestamp int64) string {
+	payload := fmt.Sprintf("GET\n/api/client/devices\n%d", timestamp)
+	mac := hmac.New(sha256.New, []byte(token))
+	_, _ = mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) fetchFRPJSON(ctx context.Context, settings frp.Settings, resource string, value any) error {
+	target := fmt.Sprintf("http://127.0.0.1:%d/api/%s", settings.DashboardPort, resource)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return err
+	}
+	request.SetBasicAuth(settings.DashboardUser, settings.DashboardPassword)
+	response, err := s.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("原生监控暂不可用: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("原生监控返回 HTTP %d", response.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(value); err != nil {
+		return fmt.Errorf("解析原生监控数据失败: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) onlineSSHDevices(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.options.Store.Load()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	timestamp, timestampErr := strconv.ParseInt(r.Header.Get("X-MapLink-Timestamp"), 10, 64)
+	provided, signatureErr := hex.DecodeString(r.Header.Get("X-MapLink-Signature"))
+	expected, _ := hex.DecodeString(clientDeviceSignature(settings.Token, timestamp))
+	age := time.Now().Unix() - timestamp
+	if age < 0 {
+		age = -age
+	}
+	if timestampErr != nil || signatureErr != nil || age > 120 || len(provided) != len(expected) || subtle.ConstantTimeCompare(provided, expected) != 1 {
+		writeError(w, http.StatusUnauthorized, errors.New("Token 无效"))
+		return
+	}
+
+	var clients []frpClientInfo
+	var proxies frpTCPProxyList
+	if err := s.fetchFRPJSON(r.Context(), settings, "clients", &clients); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	if err := s.fetchFRPJSON(r.Context(), settings, "proxy/tcp", &proxies); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+
+	online := make(map[string]frpClientInfo)
+	for _, client := range clients {
+		if client.Online {
+			online[clientKey(client.User, client.ClientID)] = client
+		}
+	}
+	byClient := make(map[string]onlineSSHDevice)
+	for _, proxy := range proxies.Proxies {
+		if !strings.EqualFold(proxy.Status, "online") || proxy.Conf.LocalPort != 22 || proxy.Conf.RemotePort < 1 || proxy.Conf.RemotePort > 65535 {
+			continue
+		}
+		key := clientKey(proxy.User, proxy.ClientID)
+		client, ok := online[key]
+		if !ok {
+			continue
+		}
+		name := client.Hostname
+		if name == "" {
+			name = client.ClientID
+		}
+		if name == "" {
+			name = client.User
+		}
+		id := client.Key
+		if id == "" {
+			id = proxy.User + "." + proxy.ClientID
+		}
+		device := onlineSSHDevice{
+			ID: id, Name: name, ClientID: client.ClientID, Hostname: client.Hostname,
+			ProxyName: proxy.Name, RemotePort: proxy.Conf.RemotePort,
+			Platform: proxy.Conf.Metadatas["maplinkPlatform"], SSHUser: proxy.Conf.Metadatas["maplinkSSHUser"],
+		}
+		if existing, exists := byClient[key]; !exists || device.RemotePort < existing.RemotePort {
+			byClient[key] = device
+		}
+	}
+	devices := make([]onlineSSHDevice, 0, len(byClient))
+	for _, device := range byClient {
+		devices = append(devices, device)
+	}
+	sort.Slice(devices, func(i, j int) bool {
+		if devices[i].Name == devices[j].Name {
+			return devices[i].RemotePort < devices[j].RemotePort
+		}
+		return devices[i].Name < devices[j].Name
+	})
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
 }
 
 func (s *Server) frpAPI(w http.ResponseWriter, r *http.Request) {

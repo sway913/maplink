@@ -18,6 +18,7 @@
 - 多台客户端通过独立 `clientID` / `user` 区分，可分别选择接入端口并配置多条 TCP/UDP 代理。
 - 服务操作限定为 start/stop/restart，日志接口限定读取 `frps.service`，没有任意 Shell API。
 - 远程控制使用用户显式配置的 SSH 映射和系统 OpenSSH 客户端；服务端只转发 TCP，不提供后台命令执行 API，也不保存 SSH 密码或私钥。
+- 客户端使用 FRP Token 查询在线 SSH 设备；接口只返回在线设备元数据和映射端口，不返回 Token、管理凭据或命令历史。
 
 ## 本地验证
 
