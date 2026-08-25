@@ -574,7 +574,6 @@ type frpTCPProxyInfo struct {
 	ClientID string `json:"clientID"`
 	Status   string `json:"status"`
 	Conf     struct {
-		LocalPort  int               `json:"localPort"`
 		RemotePort int               `json:"remotePort"`
 		Metadatas  map[string]string `json:"metadatas"`
 	} `json:"conf"`
@@ -664,7 +663,8 @@ func (s *Server) onlineSSHDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	byClient := make(map[string]onlineSSHDevice)
 	for _, proxy := range proxies.Proxies {
-		if !strings.EqualFold(proxy.Status, "online") || proxy.Conf.LocalPort != 22 || proxy.Conf.RemotePort < 1 || proxy.Conf.RemotePort > 65535 {
+		platform := strings.ToLower(strings.TrimSpace(proxy.Conf.Metadatas["maplinkPlatform"]))
+		if !strings.EqualFold(proxy.Status, "online") || (platform != "windows" && platform != "macos") || proxy.Conf.RemotePort < 1 || proxy.Conf.RemotePort > 65535 {
 			continue
 		}
 		key := clientKey(proxy.User, proxy.ClientID)
@@ -686,7 +686,7 @@ func (s *Server) onlineSSHDevices(w http.ResponseWriter, r *http.Request) {
 		device := onlineSSHDevice{
 			ID: id, Name: name, ClientID: client.ClientID, Hostname: client.Hostname,
 			ProxyName: proxy.Name, RemotePort: proxy.Conf.RemotePort,
-			Platform: proxy.Conf.Metadatas["maplinkPlatform"], SSHUser: proxy.Conf.Metadatas["maplinkSSHUser"],
+			Platform: platform, SSHUser: strings.TrimSpace(proxy.Conf.Metadatas["maplinkSSHUser"]),
 		}
 		if existing, exists := byClient[key]; !exists || device.RemotePort < existing.RemotePort {
 			byClient[key] = device

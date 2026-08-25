@@ -63,8 +63,9 @@ func TestClientDeviceDiscoveryRequiresTokenAndReturnsOnlineSSHEndpoints(t *testi
 			]`))
 		case "/api/proxy/tcp":
 			_, _ = w.Write([]byte(`{"proxies":[
-				{"name":"alpha.remote-shell","user":"alpha","clientID":"alpha","status":"online","conf":{"localPort":22,"remotePort":30022,"metadatas":{"maplinkPlatform":"macos","maplinkSSHUser":"alice"}}},
+				{"name":"alpha.remote-shell","user":"alpha","clientID":"alpha","status":"online","conf":{"remotePort":30022,"metadatas":{"maplinkPlatform":"macos","maplinkSSHUser":"alice"}}},
 				{"name":"beta.web","user":"beta","clientID":"beta","status":"online","conf":{"localPort":8080,"remotePort":38080}},
+				{"name":"beta.rdp","user":"beta","clientID":"beta","status":"online","conf":{"remotePort":33890}},
 				{"name":"offline.remote-shell","user":"offline","clientID":"offline","status":"online","conf":{"localPort":22,"remotePort":30024}}
 			]}`))
 		default:
