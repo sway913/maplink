@@ -89,6 +89,12 @@ func TestClientDeviceDiscoveryRequiresTokenAndReturnsOnlineSSHEndpoints(t *testi
 		t.Fatal(err)
 	}
 	settings.DashboardPort = port
+	// httptest chooses an ephemeral port. Avoid making the test flaky when that
+	// port happens to fall inside the configured proxy allocation range.
+	settings.AllowedPorts = []frp.PortRange{{Start: 30000, End: 30099}}
+	if port >= 30000 && port <= 30099 {
+		settings.AllowedPorts = []frp.PortRange{{Start: 30100, End: 30199}}
+	}
 	if err := server.options.Store.Apply(settings, nil); err != nil {
 		t.Fatal(err)
 	}
