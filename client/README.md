@@ -10,7 +10,7 @@
 - macOS Apple Silicon 发布包内置官方 `frpc` 0.71.0，直接使用系统 WKWebView；
 - 两个平台都提供“远程控制”页面，可把 B 机器的 SSH 服务通过 frpc 映射给 A 机器，并生成可供终端或 Codex 使用的标准 SSH 命令；
 - frpc 在线后，远程控制页会从服务端发现已开放 SSH 的在线设备，选择设备即可自动填写其平台、SSH 用户名和公网端口；
-- SSH 命令历史保存在当前电脑，可从列表恢复，也可在输入框首尾使用方向键浏览；
+- SSH 命令历史保存在当前电脑；输入框采用 PowerShell 式操作，↑/↓ 浏览历史、Enter 执行、Shift+Enter 换行，回查时自动跳过重复命令；
 - Windows 客户端及其启动的 frpc、OpenSSH 进程均以后台模式运行，不弹出终端窗口；
 - 两个平台都保留官方许可证；
 - frpc sidecar 只允许固定的 start/stop/status 命令；远程命令由系统 OpenSSH 客户端直接执行，不经过本地 Shell 拼接。

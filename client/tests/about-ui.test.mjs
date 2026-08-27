@@ -57,6 +57,7 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
     /id="remote-target-port"/,
     /id="remote-device"/,
     /id="remote-command-history"/,
+    /PowerShell 式操作/,
     /id="add-remote-mapping"/,
     /id="test-remote-session"/,
     /id="run-remote-command"/,
@@ -72,6 +73,8 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.match(script, /online_ssh_devices/);
   assert.match(script, /在线设备列表已刷新/);
   assert.match(script, /MapLinkCommandHistory/);
+  assert.match(script, /action === 'execute'/);
+  assert.match(script, /remoteCommand\.value = ''/);
   assert.match(script, /localIP: '127\.0\.0\.1'/);
   assert.match(script, /localPort/);
   assert.match(script, /remotePort/);

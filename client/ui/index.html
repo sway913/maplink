@@ -113,6 +113,7 @@
         <section class="panel remote-console">
           <div class="section-title"><div><small>COMMAND</small><h2>控制另一台设备</h2><p>命令通过系统 OpenSSH 客户端执行，默认 30 秒超时，输出最多保留 256 KB。</p></div><button class="primary" id="run-remote-command" type="button">执行命令</button></div>
           <label>要在对方机器执行的命令<textarea id="remote-command" rows="3" maxlength="8192" placeholder="例如：uname -a（macOS）或 Get-ComputerInfo（Windows PowerShell）"></textarea></label>
+          <p class="command-shortcuts">PowerShell 式操作：↑ / ↓ 浏览历史，Enter 执行，Shift + Enter 换行。</p>
           <div class="command-history-bar">
             <label>历史记录<select id="remote-command-history"><option value="">暂无历史命令</option></select></label>
             <button id="clear-command-history" type="button">清空历史</button>
@@ -132,7 +133,7 @@
             </div>
           </div>
           <div class="about-content">
-            <div class="about-version"><span>当前版本</span><strong>版本 0.4.0</strong></div>
+            <div class="about-version"><span>当前版本</span><strong>版本 0.4.1</strong></div>
             <p class="about-intro">映链用于连接自有服务器与多台设备，统一管理 TCP/UDP 端口映射、双向 SSH 远程命令、运行状态和客户端日志。</p>
             <div class="about-features" aria-label="主要能力">
               <span>Windows / macOS</span><span>SSH Remote Shell</span><span>TCP / UDP</span><span>本地配置</span>

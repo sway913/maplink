@@ -341,6 +341,7 @@ document.querySelector('#run-remote-command').addEventListener('click', async ()
   const command = remoteCommand.value.trim();
   if (!command) { setRemoteFeedback('错误：请输入要执行的远程命令', 'error'); return; }
   commandHistory.record(command);
+  remoteCommand.value = '';
   refreshCommandHistory();
   try {
     const result = await runRemote(command);
@@ -368,16 +369,18 @@ document.querySelector('#clear-command-history').addEventListener('click', () =>
 });
 remoteCommand.addEventListener('input', () => commandHistory.resetNavigation());
 remoteCommand.addEventListener('keydown', (event) => {
-  const atStart = remoteCommand.selectionStart === 0 && remoteCommand.selectionEnd === 0;
-  const atEnd = remoteCommand.selectionStart === remoteCommand.value.length && remoteCommand.selectionEnd === remoteCommand.value.length;
-  if (event.key === 'ArrowUp' && (event.altKey || atStart)) {
+  const action = window.MapLinkCommandHistory.keyAction(event);
+  if (action === 'previous') {
     event.preventDefault();
     remoteCommand.value = commandHistory.previous(remoteCommand.value);
     remoteCommand.setSelectionRange(remoteCommand.value.length, remoteCommand.value.length);
-  } else if (event.key === 'ArrowDown' && (event.altKey || atEnd)) {
+  } else if (action === 'next') {
     event.preventDefault();
     remoteCommand.value = commandHistory.next();
     remoteCommand.setSelectionRange(remoteCommand.value.length, remoteCommand.value.length);
+  } else if (action === 'execute') {
+    event.preventDefault();
+    document.querySelector('#run-remote-command').click();
   }
 });
 

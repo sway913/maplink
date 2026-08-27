@@ -29,7 +29,7 @@
     record(command) {
       const value = String(command || '').trim();
       if (!value) return this.list();
-      this.entries = [value, ...this.entries.filter((entry) => entry !== value)].slice(0, this.limit);
+      this.entries = [value, ...this.entries].slice(0, this.limit);
       this.save();
       this.resetNavigation();
       return this.list();
@@ -45,17 +45,22 @@
       return [...this.entries];
     }
 
+    recallList() {
+      return [...new Set(this.entries)];
+    }
+
     previous(currentValue = '') {
-      if (!this.entries.length) return String(currentValue);
+      const entries = this.recallList();
+      if (!entries.length) return String(currentValue);
       if (this.cursor === -1) this.draft = String(currentValue);
-      this.cursor = Math.min(this.cursor + 1, this.entries.length - 1);
-      return this.entries[this.cursor];
+      this.cursor = Math.min(this.cursor + 1, entries.length - 1);
+      return entries[this.cursor];
     }
 
     next() {
       if (this.cursor === -1) return this.draft;
       this.cursor -= 1;
-      return this.cursor === -1 ? this.draft : this.entries[this.cursor];
+      return this.cursor === -1 ? this.draft : this.recallList()[this.cursor];
     }
 
     resetNavigation() {
@@ -64,7 +69,15 @@
     }
   }
 
-  const api = { CommandHistory, STORAGE_KEY, MAX_ENTRIES };
+  function keyAction(event) {
+    if (event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return null;
+    if (event.key === 'ArrowUp' && !event.shiftKey) return 'previous';
+    if (event.key === 'ArrowDown' && !event.shiftKey) return 'next';
+    if (event.key === 'Enter' && !event.shiftKey) return 'execute';
+    return null;
+  }
+
+  const api = { CommandHistory, keyAction, STORAGE_KEY, MAX_ENTRIES };
   root.MapLinkCommandHistory = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 }(globalThis));
