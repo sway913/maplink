@@ -13,6 +13,13 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
+mod remote_control;
+use remote_control::{
+    remote_control_devices, remote_control_frame, remote_control_session, remote_host_status,
+    send_remote_control_input, start_remote_control, start_remote_host, stop_remote_control,
+    RemoteHostState,
+};
+
 const FRPC_VERSION: &str = "0.71.0";
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -40,6 +47,8 @@ struct Profile {
     protocol: String,
     #[serde(default)]
     ssh_user: String,
+    #[serde(default)]
+    remote_control_enabled: bool,
     proxies: Vec<Proxy>,
 }
 
@@ -999,6 +1008,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(RuntimeState::default())
         .manage(RemoteShellState::default())
+        .manage(RemoteHostState::default())
         .invoke_handler(tauri::generate_handler![
             render_config,
             save_profile,
@@ -1012,7 +1022,15 @@ pub fn run() {
             run_remote_command,
             start_remote_shell,
             write_remote_shell,
-            stop_remote_shell
+            stop_remote_shell,
+            start_remote_host,
+            remote_host_status,
+            remote_control_devices,
+            start_remote_control,
+            remote_control_session,
+            remote_control_frame,
+            send_remote_control_input,
+            stop_remote_control
         ])
         .build(tauri::generate_context!())
         .expect("error while building MapLink Client");
@@ -1022,6 +1040,8 @@ pub fn run() {
             let _ = runtime.stop_process();
             let remote_shell = app_handle.state::<RemoteShellState>();
             let _ = remote_shell.stop(None);
+            let remote_host = app_handle.state::<RemoteHostState>();
+            remote_host.stop();
         }
     });
 }
@@ -1044,6 +1064,7 @@ mod tests {
             token: "0123456789abcdef".into(),
             protocol: "tcp".into(),
             ssh_user: "codex-user".into(),
+            remote_control_enabled: false,
             proxies: vec![
                 Proxy {
                     name: "ssh".into(),

@@ -138,6 +138,102 @@ func TestClientDeviceDiscoveryRequiresTokenAndReturnsOnlineSSHEndpoints(t *testi
 	}
 }
 
+func remoteRelayRequest(t *testing.T, server *Server, method, path string, body []byte, nonce string) *httptest.ResponseRecorder {
+	t.Helper()
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	request := httptest.NewRequest(method, path, bytes.NewReader(body))
+	request.Header.Set("X-MapLink-Timestamp", timestamp)
+	request.Header.Set("X-MapLink-Nonce", nonce)
+	request.Header.Set("X-MapLink-Signature", remoteSignature("0123456789abcdef", method, path, timestamp, nonce, body))
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	return response
+}
+
+func TestRemoteRelayAuthenticatesAndMovesFramesAndInputWithoutPersistence(t *testing.T) {
+	if signature := remoteSignature("1234567890123456", http.MethodPost, "/api/remote/sessions", "1", "abcdefghijklmnop", []byte("{}")); signature != "537e596ef44b757fc3113680aa0a1a6e6760bd0dbffec3aa33e5de8bea123c2d" {
+		t.Fatalf("unexpected remote HMAC signature: %s", signature)
+	}
+	server := integrationServer(t)
+	heartbeat := []byte(`{"deviceID":"office-pc","name":"Office PC","platform":"windows","permission":"ready"}`)
+	response := remoteRelayRequest(t, server, http.MethodPost, "/api/remote/hosts/heartbeat", heartbeat, "heartbeat-nonce-0001")
+	if response.Code != http.StatusOK {
+		t.Fatalf("heartbeat failed: %d %s", response.Code, response.Body.String())
+	}
+
+	// The same signed request cannot be replayed during the validity window.
+	replayed := remoteRelayRequest(t, server, http.MethodPost, "/api/remote/hosts/heartbeat", heartbeat, "heartbeat-nonce-0001")
+	if replayed.Code != http.StatusUnauthorized {
+		t.Fatalf("expected replay to be rejected, got %d", replayed.Code)
+	}
+
+	devices := remoteRelayRequest(t, server, http.MethodGet, "/api/remote/devices", nil, "devices-list-nonce-01")
+	if devices.Code != http.StatusOK || !strings.Contains(devices.Body.String(), "Office PC") {
+		t.Fatalf("device listing failed: %d %s", devices.Code, devices.Body.String())
+	}
+
+	createBody := []byte(`{"targetDeviceID":"office-pc","controllerDeviceID":"home-mac"}`)
+	created := remoteRelayRequest(t, server, http.MethodPost, "/api/remote/sessions", createBody, "create-session-nonce1")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("session creation failed: %d %s", created.Code, created.Body.String())
+	}
+	var session remoteSessionView
+	if err := json.Unmarshal(created.Body.Bytes(), &session); err != nil || session.ID == "" {
+		t.Fatalf("invalid created session: %v %s", err, created.Body.String())
+	}
+
+	hostPath := "/api/remote/hosts/office-pc/sessions"
+	hostSessions := remoteRelayRequest(t, server, http.MethodGet, hostPath, nil, "host-session-nonce01")
+	if hostSessions.Code != http.StatusOK || !strings.Contains(hostSessions.Body.String(), session.ID) {
+		t.Fatalf("host did not receive session: %d %s", hostSessions.Code, hostSessions.Body.String())
+	}
+
+	acceptPath := "/api/remote/sessions/" + session.ID + "/accept"
+	accepted := remoteRelayRequest(t, server, http.MethodPost, acceptPath, []byte(`{"screenX":0,"screenY":0,"screenWidth":1920,"screenHeight":1080,"error":""}`), "accept-session-nonce1")
+	if accepted.Code != http.StatusOK || !strings.Contains(accepted.Body.String(), `"state":"active"`) {
+		t.Fatalf("session acceptance failed: %d %s", accepted.Code, accepted.Body.String())
+	}
+
+	framePath := "/api/remote/sessions/" + session.ID + "/frames"
+	frameBody := []byte{0xff, 0xd8, 0xff, 0xdb, 1, 2, 3, 4, 0xff, 0xd9}
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	frameRequest := httptest.NewRequest(http.MethodPost, framePath, bytes.NewReader(frameBody))
+	frameRequest.Header.Set("X-MapLink-Timestamp", timestamp)
+	frameRequest.Header.Set("X-MapLink-Nonce", "upload-frame-nonce01")
+	frameRequest.Header.Set("X-MapLink-Signature", remoteSignature("0123456789abcdef", http.MethodPost, framePath, timestamp, "upload-frame-nonce01", frameBody))
+	frameRequest.Header.Set("X-MapLink-Sequence", "1")
+	frameRequest.Header.Set("X-MapLink-Width", "1280")
+	frameRequest.Header.Set("X-MapLink-Height", "720")
+	frameResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(frameResponse, frameRequest)
+	if frameResponse.Code != http.StatusNoContent {
+		t.Fatalf("frame upload failed: %d %s", frameResponse.Code, frameResponse.Body.String())
+	}
+
+	downloadPath := framePath + "?after=0"
+	download := remoteRelayRequest(t, server, http.MethodGet, downloadPath, nil, "download-frame-nonce")
+	if download.Code != http.StatusOK || !bytes.Equal(download.Body.Bytes(), frameBody) || download.Header().Get("X-MapLink-Sequence") != "1" {
+		t.Fatalf("frame download mismatch: %d %#v", download.Code, download.Body.Bytes())
+	}
+
+	inputPath := "/api/remote/sessions/" + session.ID + "/inputs"
+	postedInput := remoteRelayRequest(t, server, http.MethodPost, inputPath, []byte(`{"events":[{"type":"move","x":0.25,"y":0.75},{"type":"button","x":0.25,"y":0.75,"button":0,"down":true}]}`), "post-input-nonce001")
+	if postedInput.Code != http.StatusAccepted {
+		t.Fatalf("input posting failed: %d %s", postedInput.Code, postedInput.Body.String())
+	}
+	pollPath := inputPath + "?after=0&wait=0"
+	polledInput := remoteRelayRequest(t, server, http.MethodGet, pollPath, nil, "poll-input-nonce001")
+	if polledInput.Code != http.StatusOK || !strings.Contains(polledInput.Body.String(), `"type":"button"`) {
+		t.Fatalf("input polling failed: %d %s", polledInput.Code, polledInput.Body.String())
+	}
+
+	closePath := "/api/remote/sessions/" + session.ID
+	closed := remoteRelayRequest(t, server, http.MethodDelete, closePath, nil, "close-session-nonce1")
+	if closed.Code != http.StatusNoContent {
+		t.Fatalf("session close failed: %d %s", closed.Code, closed.Body.String())
+	}
+}
+
 func TestCredentialsGenerateDistinctDeviceConfigOnSelectedControlPort(t *testing.T) {
 	server := integrationServer(t)
 	login := httptest.NewRecorder()

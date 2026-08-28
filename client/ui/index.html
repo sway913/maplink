@@ -63,6 +63,36 @@
           </div>
           <span class="platform-badge" id="remote-platform">正在识别平台</span>
         </section>
+        <section class="panel remote-desktop" aria-label="桌面远程控制">
+          <div class="desktop-toolbar">
+            <div>
+              <small>REMOTE DESKTOP · SERVER RELAY</small>
+              <h2>远程桌面</h2>
+              <p>通过 MapLink 服务器中转实时画面与鼠标键盘，不需要单独填写公网端口。</p>
+            </div>
+            <label class="remote-enable"><input id="remote-control-enabled" type="checkbox" />允许其他 MapLink 设备控制本机</label>
+          </div>
+          <div class="desktop-connect">
+            <label>在线远程设备
+              <select id="desktop-device"><option value="">正在读取在线设备…</option></select>
+            </label>
+            <button id="refresh-desktop-devices" type="button">刷新设备</button>
+            <button class="primary" id="connect-remote-desktop" type="button">远程连接</button>
+            <button id="disconnect-remote-desktop" type="button" disabled>断开</button>
+          </div>
+          <div class="remote-screen" id="remote-screen" tabindex="0" aria-label="远程桌面画面">
+            <img id="remote-screen-image" alt="远程桌面实时画面" draggable="false" hidden />
+            <div id="remote-screen-placeholder">
+              <strong>选择在线设备后开始远程控制</strong>
+              <span>连接后点击画面即可发送鼠标与键盘输入</span>
+            </div>
+          </div>
+          <div class="desktop-statusbar">
+            <span><i id="desktop-session-indicator"></i><strong id="desktop-session-status">远程桌面未连接</strong></span>
+            <span id="desktop-frame-meta">服务器加密认证中转 · 不录屏、不落盘</span>
+          </div>
+          <p class="desktop-permission" id="desktop-host-status">远程控制主机未开启。Windows 将以管理员权限启动；macOS 首次使用需允许“屏幕录制”和“辅助功能”。</p>
+        </section>
         <div class="remote-layout">
           <section class="panel remote-setup">
             <div class="section-title"><div><small>LOCAL ENDPOINT</small><h2>开放本机控制入口</h2><p>为当前机器分配一个唯一的公网端口，让另一台 MapLink 设备可以连接本机 SSH。</p></div></div>
@@ -130,10 +160,10 @@
             </div>
           </div>
           <div class="about-content">
-            <div class="about-version"><span>当前版本</span><strong>版本 0.4.2</strong></div>
-            <p class="about-intro">映链用于连接自有服务器与多台设备，统一管理 TCP/UDP 端口映射、双向 SSH 远程命令、运行状态和客户端日志。</p>
+            <div class="about-version"><span>当前版本</span><strong>版本 0.5.0</strong></div>
+            <p class="about-intro">映链用于连接自有服务器与多台设备，统一管理 TCP/UDP 端口映射、服务器中转远程桌面、双向 SSH 终端、运行状态和客户端日志。</p>
             <div class="about-features" aria-label="主要能力">
-              <span>Windows / macOS</span><span>SSH Remote Shell</span><span>TCP / UDP</span><span>本地配置</span>
+              <span>Windows / macOS</span><span>Remote Desktop</span><span>SSH Remote Shell</span><span>TCP / UDP</span><span>本地配置</span>
             </div>
             <section class="source-card">
               <div><small>OPEN SOURCE</small><h3>Powered by frp</h3></div>

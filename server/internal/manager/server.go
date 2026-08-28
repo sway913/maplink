@@ -57,6 +57,7 @@ type Server struct {
 	adminHash     string
 	sessions      map[string]session
 	attempts      map[string]attempt
+	remote        *remoteHub
 }
 
 func randomToken(bytes int) (string, error) {
@@ -100,6 +101,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		adminHash: adminHash,
 		sessions:  map[string]session{},
 		attempts:  map[string]attempt{},
+		remote:    newRemoteHub(),
 	}
 	server.routes()
 	return server, nil
@@ -120,6 +122,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/ports", s.authenticated(s.ports))
 	s.mux.HandleFunc("GET /api/frp/{resource...}", s.authenticated(s.frpAPI))
 	s.mux.HandleFunc("GET /api/client/devices", s.onlineSSHDevices)
+	s.mux.HandleFunc("GET /api/remote/devices", s.remoteDevices)
+	s.mux.HandleFunc("POST /api/remote/hosts/heartbeat", s.remoteHostHeartbeat)
+	s.mux.HandleFunc("GET /api/remote/hosts/{deviceID}/sessions", s.remoteHostSessions)
+	s.mux.HandleFunc("POST /api/remote/sessions", s.remoteCreateSession)
+	s.mux.HandleFunc("GET /api/remote/sessions/{sessionID}", s.remoteSessionStatus)
+	s.mux.HandleFunc("DELETE /api/remote/sessions/{sessionID}", s.remoteCloseSession)
+	s.mux.HandleFunc("POST /api/remote/sessions/{sessionID}/accept", s.remoteAcceptSession)
+	s.mux.HandleFunc("POST /api/remote/sessions/{sessionID}/frames", s.remoteUploadFrame)
+	s.mux.HandleFunc("GET /api/remote/sessions/{sessionID}/frames", s.remoteDownloadFrame)
+	s.mux.HandleFunc("POST /api/remote/sessions/{sessionID}/inputs", s.remotePostInputs)
+	s.mux.HandleFunc("GET /api/remote/sessions/{sessionID}/inputs", s.remotePollInputs)
 	s.mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

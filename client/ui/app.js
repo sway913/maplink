@@ -14,6 +14,17 @@ const connectRemoteShellButton = document.querySelector('#test-remote-session');
 const disconnectRemoteShellButton = document.querySelector('#disconnect-remote-shell');
 const remoteTerminalStatus = document.querySelector('#remote-terminal-status');
 const remoteTerminalIndicator = document.querySelector('#remote-terminal-indicator');
+const remoteControlEnabled = document.querySelector('#remote-control-enabled');
+const desktopDevice = document.querySelector('#desktop-device');
+const connectRemoteDesktopButton = document.querySelector('#connect-remote-desktop');
+const disconnectRemoteDesktopButton = document.querySelector('#disconnect-remote-desktop');
+const remoteScreen = document.querySelector('#remote-screen');
+const remoteScreenImage = document.querySelector('#remote-screen-image');
+const remoteScreenPlaceholder = document.querySelector('#remote-screen-placeholder');
+const desktopSessionStatus = document.querySelector('#desktop-session-status');
+const desktopSessionIndicator = document.querySelector('#desktop-session-indicator');
+const desktopFrameMeta = document.querySelector('#desktop-frame-meta');
+const desktopHostStatus = document.querySelector('#desktop-host-status');
 const terminal = new window.Terminal({
   cursorBlink: true,
   cursorStyle: 'block',
@@ -44,6 +55,12 @@ let runtimeRunning = false;
 let lastDeviceRefresh = 0;
 let deviceRefreshPromise;
 let onlineDevices = new Map();
+let desktopDevices = new Map();
+let desktopRefreshPromise;
+let activeDesktopSession = null;
+let desktopGeneration = 0;
+let desktopInputQueue = [];
+let desktopInputTimer;
 
 function switchTab(name, focus = false) {
   for (const button of document.querySelectorAll('[data-tab]')) {
@@ -60,6 +77,7 @@ function switchTab(name, focus = false) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (name === 'remote') {
     refreshOnlineDevices(true);
+    refreshRemoteControlDevices(true);
     window.setTimeout(() => {
       terminalFitAddon.fit();
       terminal.focus();
@@ -97,6 +115,7 @@ function profile() {
     token: document.querySelector('#token').value,
     protocol: document.querySelector('#protocol').value,
     sshUser: document.querySelector('#sshUser').value.trim(),
+    remoteControlEnabled: remoteControlEnabled.checked,
     proxies: [...list.querySelectorAll('.proxy-row')].map((row) => Object.fromEntries(
       [...row.querySelectorAll('[data-field]')].map((input) => [input.dataset.field, input.type === 'number' ? Number(input.value) : input.value.trim()]),
     )),
@@ -265,11 +284,13 @@ async function refreshOnlineDevices(force = false) {
 
 async function refreshRuntime() {
   try {
-    const [status, logs] = await Promise.all([
+    const [status, logs, hostStatus] = await Promise.all([
       invoke('client_status'),
       invoke('client_logs', { lines: 120 }),
+      invoke('remote_host_status'),
     ]);
     paintRuntime(status);
+    paintRemoteHostStatus(hostStatus);
     document.querySelector('#client-logs').textContent = logs || '暂无日志';
     if (status.running) refreshOnlineDevices();
   } catch (error) {
@@ -290,6 +311,162 @@ function remoteShellRequest() {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('公网 SSH 端口无效');
   if (!['windows', 'macos'].includes(platform)) throw new Error('对方系统类型无效');
   return { host, username, port, platform };
+}
+
+function setDesktopSessionState(state, message) {
+  desktopSessionStatus.textContent = message;
+  desktopSessionIndicator.className = state;
+  connectRemoteDesktopButton.disabled = state === 'connecting' || state === 'connected';
+  disconnectRemoteDesktopButton.disabled = state !== 'connecting' && state !== 'connected';
+}
+
+function paintRemoteHostStatus(status) {
+  desktopHostStatus.textContent = status.message;
+  desktopHostStatus.classList.toggle('ready', ['ready', 'controlled'].includes(status.state));
+  desktopHostStatus.classList.toggle('error', ['error', 'permission-required'].includes(status.state));
+}
+
+async function syncRemoteHost() {
+  const currentProfile = profile();
+  if (!currentProfile.serverAddr || currentProfile.token.length < 16) {
+    paintRemoteHostStatus({ state: 'disabled', message: '请先在“连接配置”填写服务器地址和 Token。' });
+    return;
+  }
+  const status = await invoke('start_remote_host', {
+    profile: currentProfile,
+    enabled: remoteControlEnabled.checked,
+  });
+  paintRemoteHostStatus(status);
+}
+
+async function refreshRemoteControlDevices(force = false) {
+  if (desktopRefreshPromise) return desktopRefreshPromise;
+  const currentProfile = profile();
+  if (!currentProfile.serverAddr || currentProfile.token.length < 16) {
+    desktopDevice.replaceChildren(option('请先填写服务器地址和 Token'));
+    return;
+  }
+  const selectedID = desktopDevice.value;
+  desktopDevice.disabled = true;
+  if (!selectedID) desktopDevice.replaceChildren(option('正在读取远程设备…'));
+  desktopRefreshPromise = invoke('remote_control_devices', { profile: currentProfile })
+    .then((devices) => {
+      const available = devices.filter((device) => device.deviceID !== currentProfile.deviceID && device.permission === 'ready');
+      desktopDevices = new Map(available.map((device) => [device.deviceID, device]));
+      desktopDevice.replaceChildren(option(available.length ? `选择远程设备（${available.length}）` : '暂无可远控的在线设备'));
+      for (const device of available) {
+        desktopDevice.append(option(`${device.name} · ${platformLabel(device.platform)}`, device.deviceID));
+      }
+      if (desktopDevices.has(selectedID)) desktopDevice.value = selectedID;
+      else if (available.length === 1) desktopDevice.value = available[0].deviceID;
+    })
+    .catch((error) => {
+      desktopDevice.replaceChildren(option('远程设备读取失败，点击刷新重试'));
+      if (force) desktopHostStatus.textContent = `设备读取失败：${error}`;
+    })
+    .finally(() => {
+      desktopDevice.disabled = false;
+      desktopRefreshPromise = undefined;
+    });
+  return desktopRefreshPromise;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function connectRemoteDesktop() {
+  const targetDeviceID = desktopDevice.value;
+  if (!desktopDevices.has(targetDeviceID)) throw new Error('请选择一台可远控的在线设备');
+  if (activeDesktopSession) await disconnectRemoteDesktop(false);
+  const generation = ++desktopGeneration;
+  setDesktopSessionState('connecting', '正在等待对方设备响应…');
+  desktopFrameMeta.textContent = '正在通过 MapLink 服务器建立会话';
+  const currentProfile = profile();
+  let session = await invoke('start_remote_control', { profile: currentProfile, targetDeviceID });
+  activeDesktopSession = session.id;
+  const deadline = Date.now() + 30000;
+  while (session.state === 'pending' && Date.now() < deadline && generation === desktopGeneration) {
+    await delay(400);
+    session = await invoke('remote_control_session', { profile: currentProfile, sessionId: session.id });
+  }
+  if (generation !== desktopGeneration) return;
+  if (session.state !== 'active') throw new Error(session.error || '对方设备响应超时');
+  setDesktopSessionState('connected', `已连接 ${desktopDevices.get(targetDeviceID).name}`);
+  remoteScreen.focus();
+  remoteScreenPlaceholder.hidden = true;
+  remoteScreenImage.hidden = false;
+  readRemoteFrames(currentProfile, session.id, generation, session.frameSequence);
+}
+
+async function readRemoteFrames(currentProfile, sessionID, generation, after = 0) {
+  while (generation === desktopGeneration && activeDesktopSession === sessionID) {
+    try {
+      const frame = await invoke('remote_control_frame', {
+        profile: currentProfile,
+        sessionId: sessionID,
+        after,
+      });
+      if (!frame) continue;
+      after = frame.sequence;
+      remoteScreenImage.src = frame.dataUrl;
+      desktopFrameMeta.textContent = `${frame.width} × ${frame.height} · 帧 ${frame.sequence} · 服务器实时中转`;
+    } catch (error) {
+      if (generation !== desktopGeneration) return;
+      await disconnectRemoteDesktop(false);
+      setDesktopSessionState('disconnected', '远程桌面已断开');
+      desktopHostStatus.textContent = `远程画面中断：${error}`;
+      desktopHostStatus.classList.add('error');
+      return;
+    }
+  }
+}
+
+async function disconnectRemoteDesktop(notifyServer = true) {
+  const sessionID = activeDesktopSession;
+  activeDesktopSession = null;
+  desktopGeneration += 1;
+  desktopInputQueue = [];
+  window.clearTimeout(desktopInputTimer);
+  desktopInputTimer = undefined;
+  remoteScreenImage.hidden = true;
+  remoteScreenImage.removeAttribute('src');
+  remoteScreenPlaceholder.hidden = false;
+  desktopFrameMeta.textContent = '服务器加密认证中转 · 不录屏、不落盘';
+  setDesktopSessionState('disconnected', '远程桌面未连接');
+  if (notifyServer && sessionID) {
+    await invoke('stop_remote_control', { profile: profile(), sessionId: sessionID });
+  }
+}
+
+function normalizedRemotePoint(event) {
+  const bounds = remoteScreenImage.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return null;
+  return {
+    x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+    y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+  };
+}
+
+function queueRemoteInput(event) {
+  if (!activeDesktopSession) return;
+  if (event.type === 'move' && desktopInputQueue.at(-1)?.type === 'move') desktopInputQueue[desktopInputQueue.length - 1] = event;
+  else desktopInputQueue.push(event);
+  if (desktopInputQueue.length > 64) desktopInputQueue.splice(0, desktopInputQueue.length - 64);
+  if (desktopInputTimer === undefined) desktopInputTimer = window.setTimeout(flushRemoteInput, 16);
+}
+
+function flushRemoteInput() {
+  desktopInputTimer = undefined;
+  const sessionID = activeDesktopSession;
+  const events = desktopInputQueue.splice(0, 64);
+  if (!sessionID || !events.length) return;
+  invoke('send_remote_control_input', { profile: profile(), sessionId: sessionID, events })
+    .catch((error) => {
+      desktopHostStatus.textContent = `发送远程输入失败：${error}`;
+      desktopHostStatus.classList.add('error');
+    });
+  if (desktopInputQueue.length) desktopInputTimer = window.setTimeout(flushRemoteInput, 16);
 }
 
 function sshCommand() {
@@ -401,7 +578,10 @@ async function connectRemoteShell() {
 
 document.querySelector('#add-proxy').addEventListener('click', () => addProxy());
 document.querySelector('#profile-form').addEventListener('submit', (event) => {
-  event.preventDefault(); showResult(() => invoke('save_profile', { profile: profile() }));
+  event.preventDefault(); showResult(async () => {
+    await invoke('save_profile', { profile: profile() });
+    await syncRemoteHost();
+  });
 });
 document.querySelector('#copy-config').addEventListener('click', () => showResult(async () => {
   const config = await invoke('render_config', { profile: profile() });
@@ -411,6 +591,7 @@ document.querySelector('#refresh-client').addEventListener('click', () => showRe
 startButton.addEventListener('click', () => showResult(async () => {
   const status = await invoke('start_client', { profile: profile() });
   paintRuntime(status);
+  await syncRemoteHost();
   await refreshRuntime();
   await refreshOnlineDevices(true);
 }, '✓ 原版 frpc 已启动'));
@@ -446,6 +627,68 @@ disconnectRemoteShellButton.addEventListener('click', () => {
   disconnectRemoteShell().catch((error) => setRemoteFeedback(`断开失败：${error}`, 'error'));
 });
 
+document.querySelector('#refresh-desktop-devices').addEventListener('click', () => refreshRemoteControlDevices(true));
+connectRemoteDesktopButton.addEventListener('click', async () => {
+  try {
+    await connectRemoteDesktop();
+  } catch (error) {
+    if (activeDesktopSession) await disconnectRemoteDesktop().catch(() => {});
+    setDesktopSessionState('disconnected', '远程桌面连接失败');
+    desktopHostStatus.textContent = `连接失败：${error}`;
+    desktopHostStatus.classList.add('error');
+  }
+});
+disconnectRemoteDesktopButton.addEventListener('click', () => {
+  disconnectRemoteDesktop().catch((error) => {
+    desktopHostStatus.textContent = `断开失败：${error}`;
+    desktopHostStatus.classList.add('error');
+  });
+});
+remoteControlEnabled.addEventListener('change', async () => {
+  try {
+    await invoke('save_profile', { profile: profile() });
+    await syncRemoteHost();
+    await refreshRemoteControlDevices(true);
+  } catch (error) {
+    desktopHostStatus.textContent = `远程控制主机设置失败：${error}`;
+    desktopHostStatus.classList.add('error');
+  }
+});
+
+remoteScreen.addEventListener('contextmenu', (event) => event.preventDefault());
+remoteScreen.addEventListener('pointermove', (event) => {
+  const point = normalizedRemotePoint(event);
+  if (point) queueRemoteInput({ type: 'move', ...point });
+});
+remoteScreen.addEventListener('pointerdown', (event) => {
+  if (!activeDesktopSession) return;
+  event.preventDefault();
+  remoteScreen.focus();
+  remoteScreen.setPointerCapture?.(event.pointerId);
+  const point = normalizedRemotePoint(event);
+  if (point) queueRemoteInput({ type: 'move', ...point });
+  queueRemoteInput({ type: 'button', button: event.button, down: true, ...(point || {}) });
+});
+remoteScreen.addEventListener('pointerup', (event) => {
+  if (!activeDesktopSession) return;
+  event.preventDefault();
+  const point = normalizedRemotePoint(event);
+  queueRemoteInput({ type: 'button', button: event.button, down: false, ...(point || {}) });
+  remoteScreen.releasePointerCapture?.(event.pointerId);
+});
+remoteScreen.addEventListener('wheel', (event) => {
+  if (!activeDesktopSession) return;
+  event.preventDefault();
+  queueRemoteInput({ type: 'wheel', deltaX: Math.round(event.deltaX), deltaY: Math.round(event.deltaY) });
+}, { passive: false });
+for (const eventName of ['keydown', 'keyup']) {
+  remoteScreen.addEventListener(eventName, (event) => {
+    if (!activeDesktopSession || event.isComposing) return;
+    event.preventDefault();
+    queueRemoteInput({ type: 'key', key: event.key, code: event.code, down: eventName === 'keydown' });
+  });
+}
+
 invoke('load_profile').then((saved) => {
   if (!saved) {
     const proxies = [{ name: 'ssh-home', type: 'tcp', localIP: '127.0.0.1', localPort: 22, remotePort: 30022 }];
@@ -456,10 +699,15 @@ invoke('load_profile').then((saved) => {
   }
   for (const key of ['deviceID', 'serverAddr', 'serverPort', 'managerPort', 'token', 'protocol']) document.querySelector(`#${key}`).value = saved[key];
   if (saved.sshUser) document.querySelector('#sshUser').value = saved.sshUser;
+  remoteControlEnabled.checked = Boolean(saved.remoteControlEnabled);
   saved.proxies.forEach(addProxy);
   syncRemoteHostMapping(saved.proxies);
   updateRemoteAddress();
   refreshOnlineDevices(true);
+  syncRemoteHost().then(() => refreshRemoteControlDevices(true)).catch((error) => {
+    desktopHostStatus.textContent = `远程控制主机启动失败：${error}`;
+    desktopHostStatus.classList.add('error');
+  });
 }).catch(() => { addProxy(); updateRemoteAddress(); });
 
 invoke('remote_platform').then((platform) => {
@@ -477,4 +725,5 @@ refreshTimer = window.setInterval(refreshRuntime, 2500);
 window.addEventListener('beforeunload', () => {
   window.clearInterval(refreshTimer);
   window.clearTimeout(terminalInputTimer);
+  window.clearTimeout(desktopInputTimer);
 });

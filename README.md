@@ -6,7 +6,7 @@
 
 - `server/`：Go 管理 API、认证、配置渲染及 systemd 控制。
 - `web/`：可静态部署的服务端管理界面。
-- `client/`：Tauri 2 桌面客户端，支持 Windows x64 与 macOS Apple Silicon，负责多设备、多 TCP/UDP 配置、交互式 SSH 远程终端以及原版 `frpc` 的受控启停、状态和日志。完整发布包内置官方 `frpc` 0.71.0。
+- `client/`：Tauri 2 桌面客户端，支持 Windows x64 与 macOS Apple Silicon，负责服务器中转远程桌面、多设备 TCP/UDP 配置、交互式 SSH 远程终端以及原版 `frpc` 的受控启停、状态和日志。完整发布包内置官方 `frpc` 0.71.0。
 
 ## 服务端安全边界
 
@@ -19,6 +19,7 @@
 - 服务操作限定为 start/stop/restart，日志接口限定读取 `frps.service`，没有任意 Shell API。
 - 远程控制使用用户显式配置的 SSH 映射和系统 OpenSSH 客户端；服务端只转发 TCP，不提供后台命令执行 API，也不保存 SSH 密码或私钥。
 - 客户端使用 FRP Token 查询在线 SSH 设备；接口只返回在线设备元数据和映射端口，不返回 Token、管理凭据或命令历史。
+- 远程桌面请求使用带随机数、时间戳和正文摘要的 HMAC；被控端需显式开启，服务端仅在内存保留最新画面和有上限的输入队列，失活后自动删除。
 
 ## 本地验证
 

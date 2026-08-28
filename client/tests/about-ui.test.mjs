@@ -105,6 +105,43 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.match(xtermLicense, /MIT License|Permission is hereby granted/);
 });
 
+test('v0.5.0 在第二个 Tab 顶部提供服务器中转远程桌面', async () => {
+  const [html, script, rust, server, buildScript] = await Promise.all([
+    read('../ui/index.html'),
+    read('../ui/app.js'),
+    read('../src-tauri/src/remote_control.rs'),
+    read('../../server/internal/manager/remote.go'),
+    read('../src-tauri/build.rs'),
+  ]);
+
+  for (const pattern of [
+    /id="remote-control-enabled"/,
+    /id="desktop-device"/,
+    /id="connect-remote-desktop"/,
+    /id="disconnect-remote-desktop"/,
+    /id="remote-screen"/,
+    /SERVER RELAY/,
+  ]) assert.match(html, pattern);
+  assert.ok(html.indexOf('id="remote-screen"') < html.indexOf('class="remote-layout"'));
+  for (const command of [
+    'start_remote_host',
+    'remote_control_devices',
+    'start_remote_control',
+    'remote_control_frame',
+    'send_remote_control_input',
+    'stop_remote_control',
+  ]) assert.match(script, new RegExp(command));
+  assert.match(rust, /capture_image/);
+  assert.match(rust, /JpegEncoder/);
+  assert.match(rust, /move_mouse/);
+  assert.match(rust, /danger_accept_invalid_certs/);
+  assert.match(server, /remoteFrameLimit/);
+  assert.match(server, /remoteSignature/);
+  assert.match(server, /remoteSessionTTL/);
+  assert.match(buildScript, /requireAdministrator/);
+  assert.doesNotMatch(server, /WriteFile|os\.WriteFile/);
+});
+
 test('桌面窗口使用 MapLink 用户可见名称', async () => {
   const config = JSON.parse(await read('../src-tauri/tauri.conf.json'));
 
