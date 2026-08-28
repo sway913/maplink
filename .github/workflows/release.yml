@@ -85,9 +85,21 @@ jobs:
 
       - name: Test Rust client
         working-directory: client/src-tauri
+        shell: bash
         run: |
           cargo fmt --check
-          cargo test --locked
+          set +e
+          cargo test --locked 2>&1 | tee cargo-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            details="$(tail -n 120 cargo-test.log)"
+            details="${details//'%'/'%25'}"
+            details="${details//$'\r'/'%0D'}"
+            details="${details//$'\n'/'%0A'}"
+            echo "::error title=Cargo test failed::$details"
+            exit "$status"
+          fi
 
       - name: Resolve release metadata
         if: github.event_name != 'pull_request'
@@ -163,9 +175,21 @@ jobs:
 
       - name: Test Rust client
         working-directory: client/src-tauri
+        shell: bash
         run: |
           cargo fmt --check
-          cargo test --locked
+          set +e
+          cargo test --locked 2>&1 | tee cargo-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            details="$(tail -n 120 cargo-test.log)"
+            details="${details//'%'/'%25'}"
+            details="${details//$'\r'/'%0D'}"
+            details="${details//$'\n'/'%0A'}"
+            echo "::error title=Cargo test failed::$details"
+            exit "$status"
+          fi
 
       - name: Resolve release metadata
         if: github.event_name != 'pull_request'
