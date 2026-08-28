@@ -74,6 +74,7 @@ impl RemoteHostState {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteDevice {
+    #[serde(rename = "deviceID")]
     device_id: String,
     name: String,
     platform: String,
@@ -89,7 +90,9 @@ struct RemoteDevicesResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteSession {
     id: String,
+    #[serde(rename = "targetDeviceID")]
     target_device_id: String,
+    #[serde(rename = "controllerDeviceID")]
     controller_device_id: String,
     state: String,
     #[serde(default)]
@@ -980,5 +983,15 @@ mod tests {
         assert_eq!(response.devices.len(), 1);
         assert_eq!(response.devices[0].device_id, "desktop-a");
         assert_eq!(response.devices[0].permission, "ready");
+    }
+
+    #[test]
+    fn remote_session_accepts_the_server_id_fields() {
+        let session: RemoteSession = serde_json::from_str(
+            r#"{"id":"session-a","targetDeviceID":"desktop-a","controllerDeviceID":"desktop-b","state":"active","screenX":0,"screenY":0,"screenWidth":1920,"screenHeight":1080,"frameSequence":1}"#,
+        )
+        .unwrap();
+        assert_eq!(session.target_device_id, "desktop-a");
+        assert_eq!(session.controller_device_id, "desktop-b");
     }
 }
