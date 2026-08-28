@@ -36,14 +36,19 @@ test('客户端把连接配置、远程控制和关于放在顶部 Tab', async (
   assert.match(styles, /\.top-tabs/);
   assert.match(styles, /\.about-page/);
   assert.equal(packageConfig.version, tauriConfig.version);
+  assert.equal(packageConfig.dependencies['@xterm/xterm'], '5.5.0');
+  assert.equal(packageConfig.dependencies['@xterm/addon-fit'], '0.10.0');
+  assert.match(tauriConfig.app.security.csp, /style-src 'self' 'unsafe-inline'/);
   assert.match(cargo, new RegExp(`version = "${versionPattern}"`));
 });
 
 test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令行', async () => {
-  const [html, script, rust] = await Promise.all([
+  const [html, script, rust, xterm, xtermLicense] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
     read('../src-tauri/src/lib.rs'),
+    read('../ui/vendor/xterm/xterm.js'),
+    read('../ui/vendor/xterm/XTERM-LICENSE'),
   ]);
 
   for (const pattern of [
@@ -56,25 +61,27 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
     /id="remote-host-feedback"/,
     /id="remote-target-port"/,
     /id="remote-device"/,
-    /id="remote-command-history"/,
-    /PowerShell 式操作/,
     /id="add-remote-mapping"/,
     /id="test-remote-session"/,
-    /id="run-remote-command"/,
-    /id="remote-output"/,
+    /id="disconnect-remote-shell"/,
+    /id="remote-terminal"/,
+    /vendor\/xterm\/xterm\.css/,
+    /vendor\/xterm\/xterm\.js/,
   ]) assert.match(html, pattern);
 
   assert.match(script, /ssh -p/);
-  assert.match(script, /echo MAPLINK_REMOTE_OK/);
   assert.match(script, /服务器地址格式无效/);
   assert.match(script, /SSH 用户名格式无效/);
   assert.doesNotMatch(html, /RDP \/ VNC/);
-  assert.match(script, /run_remote_command/);
+  assert.doesNotMatch(html, /id="remote-command"/);
+  assert.doesNotMatch(html, /id="remote-command-history"/);
+  assert.doesNotMatch(html, /id="remote-output"/);
   assert.match(script, /online_ssh_devices/);
   assert.match(script, /在线设备列表已刷新/);
-  assert.match(script, /MapLinkCommandHistory/);
-  assert.match(script, /action === 'execute'/);
-  assert.match(script, /remoteCommand\.value = ''/);
+  assert.match(script, /new window\.Terminal/);
+  assert.match(script, /start_remote_shell/);
+  assert.match(script, /write_remote_shell/);
+  assert.match(script, /terminal\.onData/);
   assert.match(script, /localIP: '127\.0\.0\.1'/);
   assert.match(script, /localPort/);
   assert.match(script, /remotePort/);
@@ -83,6 +90,10 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.match(html, /value="30023"/);
   assert.doesNotMatch(html, /value="2302[23]"/);
   assert.match(rust, /async fn run_remote_command/);
+  assert.match(rust, /fn start_remote_shell/);
+  assert.match(rust, /fn write_remote_shell/);
+  assert.match(rust, /"-tt"\.into\(\)/);
+  assert.match(rust, /powershell\.exe -NoExit/);
   assert.match(rust, /BatchMode=yes/);
   assert.match(rust, /ConnectTimeout=8/);
   assert.match(rust, /REMOTE_COMMAND_TIMEOUT/);
@@ -90,6 +101,8 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.match(rust, /remote_platform/);
   assert.match(rust, /hide_windows_console\(&mut command\)/);
   assert.match(rust, /online_ssh_devices/);
+  assert.ok(xterm.length > 200_000);
+  assert.match(xtermLicense, /MIT License|Permission is hereby granted/);
 });
 
 test('桌面窗口使用 MapLink 用户可见名称', async () => {

@@ -1,4 +1,5 @@
 const invoke = window.__TAURI__.core.invoke;
+const listen = window.__TAURI__.event.listen;
 const list = document.querySelector('#proxy-list');
 const template = document.querySelector('#proxy-template');
 const feedback = document.querySelector('#feedback');
@@ -8,13 +9,36 @@ const stopButton = document.querySelector('#stop-client');
 const remoteFeedback = document.querySelector('#remote-feedback');
 const remoteHostFeedback = document.querySelector('#remote-host-feedback');
 const remoteAddress = document.querySelector('#remote-address');
-const remoteOutput = document.querySelector('#remote-output');
-const remoteResultState = document.querySelector('#remote-result-state');
-const remoteResultCode = document.querySelector('#remote-result-code');
 const remoteDevice = document.querySelector('#remote-device');
-const remoteCommand = document.querySelector('#remote-command');
-const remoteCommandHistory = document.querySelector('#remote-command-history');
-const commandHistory = new window.MapLinkCommandHistory.CommandHistory(window.localStorage);
+const connectRemoteShellButton = document.querySelector('#test-remote-session');
+const disconnectRemoteShellButton = document.querySelector('#disconnect-remote-shell');
+const remoteTerminalStatus = document.querySelector('#remote-terminal-status');
+const remoteTerminalIndicator = document.querySelector('#remote-terminal-indicator');
+const terminal = new window.Terminal({
+  cursorBlink: true,
+  cursorStyle: 'block',
+  fontFamily: '"Cascadia Mono", Consolas, "SFMono-Regular", monospace',
+  fontSize: 14,
+  lineHeight: 1.18,
+  scrollback: 5000,
+  theme: {
+    background: '#0c0c0c',
+    foreground: '#cccccc',
+    cursor: '#f2f2f2',
+    selectionBackground: '#264f78',
+  },
+});
+const terminalFitAddon = new window.FitAddon.FitAddon();
+terminal.loadAddon(terminalFitAddon);
+terminal.open(document.querySelector('#remote-terminal'));
+terminal.writeln('\x1b[90mMapLink SSH 终端尚未连接，请使用上方“连接终端”。\x1b[0m');
+let activeShellGeneration = null;
+let displayedShellGeneration = null;
+let shellConnecting = false;
+let pendingShellOutput = [];
+let pendingShellClosed = new Set();
+let terminalInputBuffer = '';
+let terminalInputTimer;
 let refreshTimer;
 let runtimeRunning = false;
 let lastDeviceRefresh = 0;
@@ -34,7 +58,13 @@ function switchTab(name, focus = false) {
     panel.classList.toggle('active', active);
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
-  if (name === 'remote') refreshOnlineDevices(true);
+  if (name === 'remote') {
+    refreshOnlineDevices(true);
+    window.setTimeout(() => {
+      terminalFitAddon.fit();
+      terminal.focus();
+    }, 80);
+  }
 }
 
 for (const button of document.querySelectorAll('[data-tab]')) {
@@ -88,6 +118,61 @@ function setRemoteFeedback(message, type = '') {
   remoteFeedback.classList.toggle('success', type === 'success');
   remoteFeedback.classList.toggle('error', type === 'error');
 }
+
+function setRemoteShellState(state, message) {
+  remoteTerminalStatus.textContent = message;
+  remoteTerminalIndicator.className = state;
+  connectRemoteShellButton.disabled = state === 'connecting';
+  connectRemoteShellButton.textContent = state === 'connected' ? '重新连接' : state === 'connecting' ? '连接中…' : '连接终端';
+  disconnectRemoteShellButton.disabled = state !== 'connected';
+}
+
+function writeTerminalPayload(payload) {
+  terminal.write(new Uint8Array(payload.bytes));
+}
+
+const terminalEventsReady = Promise.all([
+  listen('remote-shell-output', ({ payload }) => {
+    if (shellConnecting && displayedShellGeneration === null) {
+      pendingShellOutput.push(payload);
+      return;
+    }
+    if (payload.generation === displayedShellGeneration) writeTerminalPayload(payload);
+  }),
+  listen('remote-shell-closed', ({ payload }) => {
+    if (shellConnecting && activeShellGeneration === null) {
+      pendingShellClosed.add(payload.generation);
+      return;
+    }
+    if (payload.generation !== activeShellGeneration) return;
+    activeShellGeneration = null;
+    shellConnecting = false;
+    setRemoteShellState('disconnected', 'SSH 已断开');
+    setRemoteFeedback('SSH 终端会话已结束。');
+    terminal.write('\r\n\x1b[90m[SSH 会话已结束]\x1b[0m\r\n');
+  }),
+]);
+
+function flushTerminalInput() {
+  window.clearTimeout(terminalInputTimer);
+  terminalInputTimer = undefined;
+  const input = terminalInputBuffer;
+  terminalInputBuffer = '';
+  const generation = activeShellGeneration;
+  if (!input || generation === null) return;
+  invoke('write_remote_shell', { generation, input }).catch((error) => {
+    if (generation !== displayedShellGeneration) return;
+    terminal.write(`\r\n\x1b[31m[MapLink: ${error}]\x1b[0m\r\n`);
+  });
+}
+
+terminal.onData((input) => {
+  if (activeShellGeneration === null) return;
+  terminalInputBuffer += input;
+  if (terminalInputTimer === undefined) terminalInputTimer = window.setTimeout(flushTerminalInput, 0);
+});
+
+window.addEventListener('resize', () => terminalFitAddon.fit());
 
 function setRemoteHostFeedback(message, type = '') {
   remoteHostFeedback.textContent = message;
@@ -194,19 +279,21 @@ async function refreshRuntime() {
   }
 }
 
-function remoteRequest(command = '') {
+function remoteShellRequest() {
   const host = document.querySelector('#serverAddr').value.trim();
   const username = document.querySelector('#remote-user').value.trim();
   const port = Number(document.querySelector('#remote-target-port').value);
+  const platform = document.querySelector('#remote-os').value;
   if (!host) throw new Error('请先在“连接配置”填写服务器地址');
   if (host.length > 253 || !/^[A-Za-z0-9[\]][A-Za-z0-9.:[\]-]*$/.test(host)) throw new Error('服务器地址格式无效');
   if (!/^[A-Za-z0-9._\\-]{1,64}$/.test(username)) throw new Error('SSH 用户名格式无效');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('公网 SSH 端口无效');
-  return { host, username, port, command };
+  if (!['windows', 'macos'].includes(platform)) throw new Error('对方系统类型无效');
+  return { host, username, port, platform };
 }
 
 function sshCommand() {
-  const request = remoteRequest();
+  const request = remoteShellRequest();
   return `ssh -p ${request.port} ${request.username}@${request.host}`;
 }
 
@@ -234,22 +321,9 @@ function updateRemoteGuide() {
   const steps = document.querySelector('#remote-steps');
   if (remoteOS === 'windows') {
     steps.innerHTML = '<li>对方机器需已启动 Windows OpenSSH Server。</li><li>双方各自在 MapLink 添加本机 SSH 映射并启动 frpc。</li><li>在这里填写对方端口，即可直接检测和执行命令。</li>';
-    document.querySelector('#remote-command').placeholder = '例如：powershell -NoProfile -Command "Get-ComputerInfo"';
   } else {
     steps.innerHTML = '<li>对方机器需已开启 macOS“远程登录”。</li><li>双方各自在 MapLink 添加本机 SSH 映射并启动 frpc。</li><li>在这里填写对方端口，即可直接检测和执行命令。</li>';
-    document.querySelector('#remote-command').placeholder = '例如：uname -a';
   }
-}
-
-function refreshCommandHistory() {
-  const entries = commandHistory.list();
-  remoteCommandHistory.replaceChildren(option(entries.length ? `选择历史命令（${entries.length}）` : '暂无历史命令'));
-  entries.forEach((entry, index) => {
-    const label = entry.replace(/\s+/g, ' ').slice(0, 120);
-    remoteCommandHistory.append(option(label, String(index)));
-  });
-  remoteCommandHistory.disabled = entries.length === 0;
-  document.querySelector('#clear-command-history').disabled = entries.length === 0;
 }
 
 function addRemoteMapping() {
@@ -270,21 +344,59 @@ function addRemoteMapping() {
   window.setTimeout(() => row.scrollIntoView({ behavior: 'smooth', block: 'center' }), 180);
 }
 
-async function runRemote(command) {
-  const request = remoteRequest(command);
-  remoteResultState.textContent = '正在连接…';
-  remoteResultState.className = '';
-  remoteResultCode.textContent = '退出码 —';
-  remoteOutput.textContent = '等待远端响应…';
-  const result = await invoke('run_remote_command', { request });
-  remoteResultState.textContent = result.timedOut ? '执行超时' : result.success ? '执行成功' : '执行失败';
-  remoteResultState.className = result.success ? 'success' : 'error';
-  remoteResultCode.textContent = `退出码 ${result.exitCode ?? '—'}`;
-  const sections = [];
-  if (result.stdout) sections.push(result.stdout);
-  if (result.stderr) sections.push(`[stderr]\n${result.stderr}`);
-  remoteOutput.textContent = sections.join('\n\n') || '命令没有输出。';
-  return result;
+async function disconnectRemoteShell(showMessage = true) {
+  const generation = activeShellGeneration;
+  activeShellGeneration = null;
+  shellConnecting = false;
+  terminalInputBuffer = '';
+  window.clearTimeout(terminalInputTimer);
+  terminalInputTimer = undefined;
+  if (generation !== null) await invoke('stop_remote_shell', { generation });
+  setRemoteShellState('disconnected', 'SSH 未连接');
+  if (showMessage) terminal.write('\r\n\x1b[90m[SSH 会话已断开]\x1b[0m\r\n');
+}
+
+async function connectRemoteShell() {
+  const request = remoteShellRequest();
+  await terminalEventsReady;
+  if (activeShellGeneration !== null) await disconnectRemoteShell(false);
+  shellConnecting = true;
+  displayedShellGeneration = null;
+  pendingShellOutput = [];
+  pendingShellClosed = new Set();
+  terminal.reset();
+  terminal.clear();
+  terminalFitAddon.fit();
+  setRemoteShellState('connecting', 'SSH 连接中…');
+  setRemoteFeedback('正在建立交互式 SSH 终端…');
+  try {
+    const generation = await invoke('start_remote_shell', { request });
+    activeShellGeneration = generation;
+    displayedShellGeneration = generation;
+    shellConnecting = false;
+    for (const payload of pendingShellOutput) {
+      if (payload.generation === generation) writeTerminalPayload(payload);
+    }
+    pendingShellOutput = [];
+    if (pendingShellClosed.has(generation)) {
+      activeShellGeneration = null;
+      pendingShellClosed.clear();
+      setRemoteShellState('disconnected', 'SSH 已断开');
+      setRemoteFeedback('SSH 终端会话已结束。');
+      terminal.write('\r\n\x1b[90m[SSH 会话已结束]\x1b[0m\r\n');
+      return;
+    }
+    pendingShellClosed.clear();
+    setRemoteShellState('connected', 'SSH 已连接');
+    setRemoteFeedback('✓ 已进入远端交互式终端。', 'success');
+    terminal.focus();
+  } catch (error) {
+    shellConnecting = false;
+    activeShellGeneration = null;
+    setRemoteShellState('disconnected', 'SSH 连接失败');
+    setRemoteFeedback(`连接失败：${error}`, 'error');
+    terminal.writeln(`\x1b[31m[MapLink: ${error}]\x1b[0m`);
+  }
 }
 
 document.querySelector('#add-proxy').addEventListener('click', () => addProxy());
@@ -328,60 +440,10 @@ document.querySelector('#copy-ssh-command').addEventListener('click', async () =
   }
 });
 document.querySelector('#test-remote-session').addEventListener('click', async () => {
-  try {
-    const result = await runRemote('echo MAPLINK_REMOTE_OK');
-    const verified = result.success && result.stdout.includes('MAPLINK_REMOTE_OK');
-    setRemoteFeedback(verified ? '✓ SSH 密钥连接验证通过。' : '连接建立，但验证输出不符合预期。', verified ? 'success' : 'error');
-  } catch (error) {
-    setRemoteFeedback(`连接失败：${error}`, 'error');
-    remoteOutput.textContent = String(error);
-  }
+  try { await connectRemoteShell(); } catch (error) { setRemoteFeedback(`连接失败：${error}`, 'error'); }
 });
-document.querySelector('#run-remote-command').addEventListener('click', async () => {
-  const command = remoteCommand.value.trim();
-  if (!command) { setRemoteFeedback('错误：请输入要执行的远程命令', 'error'); return; }
-  commandHistory.record(command);
-  remoteCommand.value = '';
-  refreshCommandHistory();
-  try {
-    const result = await runRemote(command);
-    setRemoteFeedback(result.success ? '✓ 远程命令执行完成。' : '远程命令返回非零退出码。', result.success ? 'success' : 'error');
-  } catch (error) {
-    setRemoteFeedback(`执行失败：${error}`, 'error');
-    remoteOutput.textContent = String(error);
-  }
-});
-
-remoteCommandHistory.addEventListener('change', () => {
-  if (remoteCommandHistory.value === '') return;
-  const selected = commandHistory.list()[Number(remoteCommandHistory.value)];
-  if (selected !== undefined) {
-    remoteCommand.value = selected;
-    remoteCommand.focus();
-    remoteCommand.setSelectionRange(selected.length, selected.length);
-  }
-  remoteCommandHistory.value = '';
-});
-document.querySelector('#clear-command-history').addEventListener('click', () => {
-  commandHistory.clear();
-  refreshCommandHistory();
-  setRemoteFeedback('本机命令历史已清空。');
-});
-remoteCommand.addEventListener('input', () => commandHistory.resetNavigation());
-remoteCommand.addEventListener('keydown', (event) => {
-  const action = window.MapLinkCommandHistory.keyAction(event);
-  if (action === 'previous') {
-    event.preventDefault();
-    remoteCommand.value = commandHistory.previous(remoteCommand.value);
-    remoteCommand.setSelectionRange(remoteCommand.value.length, remoteCommand.value.length);
-  } else if (action === 'next') {
-    event.preventDefault();
-    remoteCommand.value = commandHistory.next();
-    remoteCommand.setSelectionRange(remoteCommand.value.length, remoteCommand.value.length);
-  } else if (action === 'execute') {
-    event.preventDefault();
-    document.querySelector('#run-remote-command').click();
-  }
+disconnectRemoteShellButton.addEventListener('click', () => {
+  disconnectRemoteShell().catch((error) => setRemoteFeedback(`断开失败：${error}`, 'error'));
 });
 
 invoke('load_profile').then((saved) => {
@@ -411,6 +473,8 @@ invoke('remote_platform').then((platform) => {
 });
 
 refreshRuntime();
-refreshCommandHistory();
 refreshTimer = window.setInterval(refreshRuntime, 2500);
-window.addEventListener('beforeunload', () => window.clearInterval(refreshTimer));
+window.addEventListener('beforeunload', () => {
+  window.clearInterval(refreshTimer);
+  window.clearTimeout(terminalInputTimer);
+});

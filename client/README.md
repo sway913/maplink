@@ -10,20 +10,20 @@
 - macOS Apple Silicon 发布包内置官方 `frpc` 0.71.0，直接使用系统 WKWebView；
 - 两个平台都提供“远程控制”页面，可把 B 机器的 SSH 服务通过 frpc 映射给 A 机器，并生成可供终端或 Codex 使用的标准 SSH 命令；
 - frpc 在线后，远程控制页会从服务端发现已开放 SSH 的在线设备，选择设备即可自动填写其平台、SSH 用户名和公网端口；
-- SSH 命令历史保存在当前电脑；输入框采用 PowerShell 式操作，↑/↓ 浏览历史、Enter 执行、Shift+Enter 换行，回查时自动跳过重复命令；
+- 远程控制页内置持久的交互式 SSH 终端：Windows 直接进入 PowerShell，macOS 进入默认登录 Shell，原生支持提示符、ANSI 输出、方向键历史、持续工作目录和交互程序；
 - Windows 客户端及其启动的 frpc、OpenSSH 进程均以后台模式运行，不弹出终端窗口；
 - 两个平台都保留官方许可证；
-- frpc sidecar 只允许固定的 start/stop/status 命令；远程命令由系统 OpenSSH 客户端直接执行，不经过本地 Shell 拼接。
+- frpc sidecar 只允许固定的 start/stop/status 命令；交互式终端由系统 OpenSSH 客户端直接建立，不经过本地 Shell 拼接。
 
-## 远程命令控制（SSH）
+## 交互式远程终端（SSH）
 
 1. 在需要互相控制的每台机器启用 SSH。macOS 在“系统设置 → 通用 → 共享”中开启“远程登录”；Windows 安装并启动 OpenSSH Server。
 2. 为双方的最小权限账号配置 SSH 公钥登录。MapLink 不保存 SSH 密码或私钥。
 3. A、B 两台机器都在 MapLink“远程控制 → 开放本机控制入口”添加自己的 SSH 映射，通常把 `127.0.0.1:22` 映射到服务端允许范围内的不同端口，例如 A 使用 `30022`、B 使用 `30023`，然后分别保存配置并启动 frpc。页面会自动识别并复用已有的 SSH 映射。
 4. A 要控制 B，直接在“连接另一台设备”选择在线的 B；B 要控制 A，同样选择在线的 A。旧配置未包含设备元数据时仍可手动填写用户名和公网端口。
-5. 页面生成的 `ssh -p <对方公网端口> <对方用户>@<服务端地址>` 可直接交给 Codex，也可以在 MapLink 页面执行远程命令。
+5. 点击“连接终端”后直接在下方终端操作。Windows 会进入持续的 PowerShell 会话，macOS 会进入远端账号的默认登录 Shell。
 
-页面内置连接检测、命令历史和远程命令面板，无需再打开外部终端；默认 30 秒超时，最多保留 256 KB 输出。除首次启用系统 SSH/远程登录及配置系统账号密钥外，双向映射、设备选择、连接检测与日常远程控制都在 MapLink 内完成。所有权限均由被控机器的 SSH 账号、密钥和系统授权决定。
+终端直接呈现远端 Shell 的提示符、ANSI 颜色和输出，键盘输入、方向键历史、工作目录变化及交互程序都保留在同一 SSH 会话中，无需再打开外部终端。除首次启用系统 SSH/远程登录及配置系统账号密钥外，双向映射、设备选择、连接和日常远程控制都在 MapLink 内完成。所有权限均由被控机器的 SSH 账号、密钥和系统授权决定。
 
 开发环境需要 Node.js、Rust 与 Tauri 2 CLI。`resources/frpc.exe` 来源于官方 `frp_0.71.0_windows_amd64.zip`，下载包 SHA-256 为 `9e5062e3e5cf07e67144a3a4acf175ef6a2486f3605dd6cf288bae34ab39819f`；`resources/frpc` 来源于官方 `frp_0.71.0_darwin_arm64.tar.gz`，下载包 SHA-256 为 `45be02b186860d375ed49a8941ae9569628a54bf14e67fc36b29c98c99dabcc6`。
 

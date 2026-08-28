@@ -80,7 +80,8 @@ jobs:
           npm ci
           npm test
           node --check ui/app.js
-          node --check ui/command-history.js
+          node --check ui/vendor/xterm/xterm.js
+          node --check ui/vendor/xterm/addon-fit.js
 
       - name: Test Rust client
         working-directory: client/src-tauri
@@ -157,7 +158,8 @@ jobs:
           npm ci
           npm test
           node --check ui/app.js
-          node --check ui/command-history.js
+          node --check ui/vendor/xterm/xterm.js
+          node --check ui/vendor/xterm/addon-fit.js
 
       - name: Test Rust client
         working-directory: client/src-tauri

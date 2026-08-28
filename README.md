@@ -6,7 +6,7 @@
 
 - `server/`：Go 管理 API、认证、配置渲染及 systemd 控制。
 - `web/`：可静态部署的服务端管理界面。
-- `client/`：Tauri 2 桌面客户端，支持 Windows x64 与 macOS Apple Silicon，负责多设备、多 TCP/UDP 配置、SSH 远程命令以及原版 `frpc` 的受控启停、状态和日志。完整发布包内置官方 `frpc` 0.71.0。
+- `client/`：Tauri 2 桌面客户端，支持 Windows x64 与 macOS Apple Silicon，负责多设备、多 TCP/UDP 配置、交互式 SSH 远程终端以及原版 `frpc` 的受控启停、状态和日志。完整发布包内置官方 `frpc` 0.71.0。
 
 ## 服务端安全边界
 

@@ -4,14 +4,14 @@ use sha2::Sha256;
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
     sync::Mutex,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 const FRPC_VERSION: &str = "0.71.0";
 
@@ -264,6 +264,28 @@ struct RemoteCommandResult {
     stderr: String,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteShellRequest {
+    host: String,
+    username: String,
+    port: u16,
+    platform: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteShellOutput {
+    generation: u64,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteShellClosed {
+    generation: u64,
+}
+
 const REMOTE_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_OUTPUT_LIMIT: usize = 256 * 1024;
 
@@ -271,6 +293,71 @@ struct RuntimePaths {
     binary: PathBuf,
     config: PathBuf,
     log: PathBuf,
+}
+
+struct RemoteShellSession {
+    generation: u64,
+    child: Child,
+    stdin: ChildStdin,
+}
+
+#[derive(Default)]
+struct RemoteShellInner {
+    generation: u64,
+    session: Option<RemoteShellSession>,
+}
+
+#[derive(Default)]
+struct RemoteShellState {
+    inner: Mutex<RemoteShellInner>,
+}
+
+impl RemoteShellState {
+    fn lock_inner(&self) -> Result<std::sync::MutexGuard<'_, RemoteShellInner>, String> {
+        self.inner
+            .lock()
+            .map_err(|_| "SSH 终端状态已损坏，请重启应用".to_string())
+    }
+
+    fn stop(&self, generation: Option<u64>) -> Result<(), String> {
+        let mut inner = self.lock_inner()?;
+        let should_stop = inner
+            .session
+            .as_ref()
+            .is_some_and(|session| generation.is_none() || generation == Some(session.generation));
+        if !should_stop {
+            return Ok(());
+        }
+        if let Some(mut session) = inner.session.take() {
+            if session
+                .child
+                .try_wait()
+                .map_err(|error| format!("读取 SSH 终端状态失败：{error}"))?
+                .is_none()
+            {
+                session
+                    .child
+                    .kill()
+                    .map_err(|error| format!("断开 SSH 终端失败：{error}"))?;
+                session
+                    .child
+                    .wait()
+                    .map_err(|error| format!("等待 SSH 终端退出失败：{error}"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RemoteShellState {
+    fn drop(&mut self) {
+        if let Ok(inner) = self.inner.get_mut() {
+            if let Some(session) = inner.session.as_mut() {
+                let _ = session.child.kill();
+                let _ = session.child.wait();
+            }
+        }
+    }
 }
 
 fn default_device_id() -> String {
@@ -356,8 +443,8 @@ fn validate(profile: &Profile) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_remote_request(request: &RemoteCommandRequest) -> Result<(), String> {
-    let host = request.host.trim();
+fn validate_remote_connection(host: &str, username: &str, port: u16) -> Result<(), String> {
+    let host = host.trim();
     if host.is_empty()
         || host.len() > 253
         || !host.chars().all(|character| {
@@ -370,7 +457,7 @@ fn validate_remote_request(request: &RemoteCommandRequest) -> Result<(), String>
     {
         return Err("SSH 主机名或地址无效".into());
     }
-    let username = request.username.trim();
+    let username = username.trim();
     if username.is_empty()
         || username.len() > 64
         || !username.chars().all(|character| {
@@ -379,14 +466,47 @@ fn validate_remote_request(request: &RemoteCommandRequest) -> Result<(), String>
     {
         return Err("SSH 用户名只能包含字母、数字、点、短横线、下划线或域分隔符".into());
     }
-    if request.port == 0 {
+    if port == 0 {
         return Err("SSH 端口必须在 1-65535 之间".into());
     }
+    Ok(())
+}
+
+fn validate_remote_request(request: &RemoteCommandRequest) -> Result<(), String> {
+    validate_remote_connection(&request.host, &request.username, request.port)?;
     let command = request.command.trim();
     if command.is_empty() || command.len() > 8192 || command.contains('\0') {
         return Err("远程命令不能为空，且长度不能超过 8192 个字符".into());
     }
     Ok(())
+}
+
+fn ssh_shell_arguments(request: &RemoteShellRequest) -> Result<Vec<String>, String> {
+    validate_remote_connection(&request.host, &request.username, request.port)?;
+    if !matches!(request.platform.as_str(), "windows" | "macos") {
+        return Err("远端系统类型无效".into());
+    }
+    let mut arguments = vec![
+        "-tt".into(),
+        "-p".into(),
+        request.port.to_string(),
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "ConnectTimeout=8".into(),
+        "-o".into(),
+        "ServerAliveInterval=5".into(),
+        "-o".into(),
+        "ServerAliveCountMax=1".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "--".into(),
+        format!("{}@{}", request.username.trim(), request.host.trim()),
+    ];
+    if request.platform == "windows" {
+        arguments.push("powershell.exe -NoExit".into());
+    }
+    Ok(arguments)
 }
 
 fn ssh_arguments(request: &RemoteCommandRequest) -> Result<Vec<String>, String> {
@@ -593,6 +713,114 @@ async fn run_remote_command(request: RemoteCommandRequest) -> Result<RemoteComma
     .map_err(|error| format!("远程命令任务异常：{error}"))?
 }
 
+fn stream_remote_shell<R: Read + Send + 'static>(
+    mut reader: R,
+    app: AppHandle,
+    generation: u64,
+    notify_closed: bool,
+) {
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let _ = app.emit(
+                        "remote-shell-output",
+                        RemoteShellOutput {
+                            generation,
+                            bytes: buffer[..count].to_vec(),
+                        },
+                    );
+                }
+                Err(error) => {
+                    let _ = app.emit(
+                        "remote-shell-output",
+                        RemoteShellOutput {
+                            generation,
+                            bytes: format!("\r\n[MapLink: 读取 SSH 终端失败：{error}]\r\n")
+                                .into_bytes(),
+                        },
+                    );
+                    break;
+                }
+            }
+        }
+        if notify_closed {
+            let _ = app.emit("remote-shell-closed", RemoteShellClosed { generation });
+        }
+    });
+}
+
+#[tauri::command]
+fn start_remote_shell(
+    app: AppHandle,
+    state: State<'_, RemoteShellState>,
+    request: RemoteShellRequest,
+) -> Result<u64, String> {
+    let arguments = ssh_shell_arguments(&request)?;
+    let program = std::env::var_os("MAPLINK_SSH_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("ssh"));
+    let mut inner = state.lock_inner()?;
+    if let Some(mut previous) = inner.session.take() {
+        let _ = previous.child.kill();
+        let _ = previous.child.wait();
+    }
+    inner.generation = inner.generation.wrapping_add(1).max(1);
+    let generation = inner.generation;
+    let mut command = Command::new(program);
+    command
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_windows_console(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("启动交互式 SSH 终端失败：{error}"))?;
+    let stdin = child.stdin.take().ok_or("无法写入 SSH 终端")?;
+    let stdout = child.stdout.take().ok_or("无法读取 SSH 终端输出")?;
+    let stderr = child.stderr.take().ok_or("无法读取 SSH 终端错误输出")?;
+    stream_remote_shell(stdout, app.clone(), generation, true);
+    stream_remote_shell(stderr, app, generation, false);
+    inner.session = Some(RemoteShellSession {
+        generation,
+        child,
+        stdin,
+    });
+    Ok(generation)
+}
+
+#[tauri::command]
+fn write_remote_shell(
+    state: State<'_, RemoteShellState>,
+    generation: u64,
+    input: String,
+) -> Result<(), String> {
+    if input.len() > 64 * 1024 {
+        return Err("单次终端输入不能超过 64 KB".into());
+    }
+    let mut inner = state.lock_inner()?;
+    let session = inner.session.as_mut().ok_or("SSH 终端尚未连接")?;
+    if session.generation != generation {
+        return Err("SSH 终端会话已更新".into());
+    }
+    session
+        .stdin
+        .write_all(input.as_bytes())
+        .and_then(|_| session.stdin.flush())
+        .map_err(|error| format!("写入 SSH 终端失败：{error}"))
+}
+
+#[tauri::command]
+fn stop_remote_shell(
+    state: State<'_, RemoteShellState>,
+    generation: Option<u64>,
+) -> Result<(), String> {
+    state.stop(generation)
+}
+
 fn profile_path(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
@@ -770,6 +998,7 @@ fn client_logs(app: AppHandle, lines: Option<usize>) -> Result<String, String> {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(RuntimeState::default())
+        .manage(RemoteShellState::default())
         .invoke_handler(tauri::generate_handler![
             render_config,
             save_profile,
@@ -780,7 +1009,10 @@ pub fn run() {
             client_logs,
             remote_platform,
             online_ssh_devices,
-            run_remote_command
+            run_remote_command,
+            start_remote_shell,
+            write_remote_shell,
+            stop_remote_shell
         ])
         .build(tauri::generate_context!())
         .expect("error while building MapLink Client");
@@ -788,6 +1020,8 @@ pub fn run() {
         if matches!(event, RunEvent::Exit) {
             let runtime = app_handle.state::<RuntimeState>();
             let _ = runtime.stop_process();
+            let remote_shell = app_handle.state::<RemoteShellState>();
+            let _ = remote_shell.stop(None);
         }
     });
 }
@@ -913,6 +1147,28 @@ remotePort = 30022
             };
             assert!(validate_remote_request(&invalid).is_err());
         }
+    }
+
+    #[test]
+    fn interactive_remote_shell_allocates_a_tty_and_opens_the_selected_system_shell() {
+        let windows = RemoteShellRequest {
+            host: "demo.maplink.local".into(),
+            username: "codex-user".into(),
+            port: 23022,
+            platform: "windows".into(),
+        };
+        let windows_arguments = ssh_shell_arguments(&windows).expect("Windows shell should render");
+        assert_eq!(windows_arguments.first().unwrap(), "-tt");
+        assert_eq!(windows_arguments.last().unwrap(), "powershell.exe -NoExit");
+
+        let macos = RemoteShellRequest {
+            platform: "macos".into(),
+            ..windows
+        };
+        let macos_arguments = ssh_shell_arguments(&macos).expect("macOS shell should render");
+        assert_eq!(macos_arguments.first().unwrap(), "-tt");
+        assert_eq!(macos_arguments.last().unwrap(), "codex-user@demo.maplink.local");
+        assert!(!macos_arguments.iter().any(|argument| argument.contains("powershell")));
     }
 
     #[test]
