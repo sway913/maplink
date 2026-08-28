@@ -1167,8 +1167,13 @@ remotePort = 30022
         };
         let macos_arguments = ssh_shell_arguments(&macos).expect("macOS shell should render");
         assert_eq!(macos_arguments.first().unwrap(), "-tt");
-        assert_eq!(macos_arguments.last().unwrap(), "codex-user@demo.maplink.local");
-        assert!(!macos_arguments.iter().any(|argument| argument.contains("powershell")));
+        assert_eq!(
+            macos_arguments.last().unwrap(),
+            "codex-user@demo.maplink.local"
+        );
+        assert!(!macos_arguments
+            .iter()
+            .any(|argument| argument.contains("powershell")));
     }
 
     #[test]
