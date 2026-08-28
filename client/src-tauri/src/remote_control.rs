@@ -6,6 +6,7 @@ use reqwest::{blocking::Client, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -491,24 +492,28 @@ fn interruptible_sleep(generation_state: &AtomicU64, generation: u64, duration: 
 struct CaptureEnvironment {
     monitor: Monitor,
     enigo: Enigo,
+    pressed_buttons: HashSet<Button>,
+    pressed_keys: HashSet<Key>,
     screen_x: i32,
     screen_y: i32,
     screen_width: i32,
     screen_height: i32,
 }
 
+fn track_pressed<T: Eq + std::hash::Hash>(pressed: &mut HashSet<T>, value: T, down: bool) {
+    if down {
+        pressed.insert(value);
+    } else {
+        pressed.remove(&value);
+    }
+}
+
 impl Drop for CaptureEnvironment {
     fn drop(&mut self) {
-        for button in [
-            Button::Left,
-            Button::Middle,
-            Button::Right,
-            Button::Back,
-            Button::Forward,
-        ] {
+        for button in self.pressed_buttons.drain() {
             let _ = self.enigo.button(button, Direction::Release);
         }
-        for key in [Key::Control, Key::Shift, Key::Alt, Key::Meta] {
+        for key in self.pressed_keys.drain() {
             let _ = self.enigo.key(key, Direction::Release);
         }
     }
@@ -532,6 +537,8 @@ fn capture_environment() -> Result<CaptureEnvironment, String> {
     Ok(CaptureEnvironment {
         monitor,
         enigo,
+        pressed_buttons: HashSet::new(),
+        pressed_keys: HashSet::new(),
         screen_x,
         screen_y,
         screen_width,
@@ -662,6 +669,7 @@ fn apply_remote_input(
                     },
                 )
                 .map_err(|error| format!("发送远程鼠标按键失败：{error}"))?;
+            track_pressed(&mut environment.pressed_buttons, button, input.down);
         }
         "wheel" => {
             if input.delta_y != 0 {
@@ -707,6 +715,7 @@ fn apply_remote_input(
                     },
                 )
                 .map_err(|error| format!("发送远程键盘输入失败：{error}"))?;
+            track_pressed(&mut environment.pressed_keys, key, input.down);
         }
         _ => return Err("远程输入类型无效".into()),
     }
@@ -928,5 +937,15 @@ mod tests {
         assert_eq!(remote_key("Enter", "Enter"), Some(Key::Return));
         assert_eq!(remote_key("a", "KeyA"), Some(Key::Unicode('a')));
         assert_eq!(remote_key("Unknown", "Unknown"), None);
+    }
+
+    #[test]
+    fn only_inputs_pressed_by_remote_session_are_tracked_for_release() {
+        let mut buttons = HashSet::new();
+        assert!(buttons.is_empty());
+        track_pressed(&mut buttons, Button::Right, true);
+        assert!(buttons.contains(&Button::Right));
+        track_pressed(&mut buttons, Button::Right, false);
+        assert!(buttons.is_empty());
     }
 }

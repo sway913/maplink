@@ -150,6 +150,15 @@ func remoteRelayRequest(t *testing.T, server *Server, method, path string, body 
 	return response
 }
 
+func TestHealthAdvertisesRemoteControlRelay(t *testing.T) {
+	server := integrationServer(t)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"remote-control"`) || !strings.Contains(response.Body.String(), `"version":"0.5.1"`) {
+		t.Fatalf("health endpoint does not advertise remote control: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestRemoteRelayAuthenticatesAndMovesFramesAndInputWithoutPersistence(t *testing.T) {
 	if signature := remoteSignature("1234567890123456", http.MethodPost, "/api/remote/sessions", "1", "abcdefghijklmnop", []byte("{}")); signature != "537e596ef44b757fc3113680aa0a1a6e6760bd0dbffec3aa33e5de8bea123c2d" {
 		t.Fatalf("unexpected remote HMAC signature: %s", signature)

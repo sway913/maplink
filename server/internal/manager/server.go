@@ -134,7 +134,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/remote/sessions/{sessionID}/inputs", s.remotePostInputs)
 	s.mux.HandleFunc("GET /api/remote/sessions/{sessionID}/inputs", s.remotePollInputs)
 	s.mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":   "ok",
+			"version":  "0.5.1",
+			"features": []string{"remote-control"},
+		})
 	})
 	if s.options.WebRoot != "" {
 		files := http.FileServer(http.Dir(s.options.WebRoot))
