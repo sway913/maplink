@@ -725,6 +725,7 @@ fn remote_key(value: &str, code: &str) -> Option<Key> {
         "Enter" => Key::Return,
         "Escape" => Key::Escape,
         "Home" => Key::Home,
+        #[cfg(not(target_os = "macos"))]
         "Insert" => Key::Insert,
         "ArrowLeft" => Key::LeftArrow,
         "Meta" => Key::Meta,
