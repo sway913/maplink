@@ -25,6 +25,9 @@ const desktopSessionStatus = document.querySelector('#desktop-session-status');
 const desktopSessionIndicator = document.querySelector('#desktop-session-indicator');
 const desktopFrameMeta = document.querySelector('#desktop-frame-meta');
 const desktopHostStatus = document.querySelector('#desktop-host-status');
+const desktopDeviceFeedback = document.querySelector('#desktop-device-feedback');
+const checkUpdateButton = document.querySelector('#check-update');
+const updateStatus = document.querySelector('#update-status');
 const terminal = new window.Terminal({
   cursorBlink: true,
   cursorStyle: 'block',
@@ -57,6 +60,7 @@ let deviceRefreshPromise;
 let onlineDevices = new Map();
 let desktopDevices = new Map();
 let desktopRefreshPromise;
+let lastDesktopRefresh = 0;
 let activeDesktopSession = null;
 let desktopGeneration = 0;
 let desktopInputQueue = [];
@@ -257,7 +261,7 @@ async function refreshOnlineDevices(force = false) {
       const ownDeviceID = currentProfile.deviceID;
       const available = devices.filter((device) => device.clientID !== ownDeviceID);
       onlineDevices = new Map(available.map((device) => [device.id, device]));
-      remoteDevice.replaceChildren(option(available.length ? `选择在线设备（${available.length}）` : '暂无其他可远控的在线设备'));
+      remoteDevice.replaceChildren(option(available.length ? `选择在线设备（${available.length}）` : '暂无在线'));
       setRemoteFeedback(
         available.length ? `✓ 已读取 ${available.length} 台可远控在线设备。` : '✓ 在线设备列表已刷新，当前没有其他可远控设备。',
         'success',
@@ -293,6 +297,7 @@ async function refreshRuntime() {
     paintRemoteHostStatus(hostStatus);
     document.querySelector('#client-logs').textContent = logs || '暂无日志';
     if (status.running) refreshOnlineDevices();
+    refreshRemoteControlDevices();
   } catch (error) {
     runtimeStatus.textContent = '状态读取失败';
     runtimeStatus.classList.add('missing');
@@ -341,28 +346,41 @@ async function syncRemoteHost() {
 
 async function refreshRemoteControlDevices(force = false) {
   if (desktopRefreshPromise) return desktopRefreshPromise;
+  if (!force && Date.now() - lastDesktopRefresh < 5000) return;
   const currentProfile = profile();
   if (!currentProfile.serverAddr || currentProfile.token.length < 16) {
     desktopDevice.replaceChildren(option('请先填写服务器地址和 Token'));
+    desktopDeviceFeedback.textContent = '请先填写服务器地址和 Token。';
+    desktopDeviceFeedback.className = 'desktop-device-feedback';
     return;
   }
+  lastDesktopRefresh = Date.now();
   const selectedID = desktopDevice.value;
   desktopDevice.disabled = true;
   if (!selectedID) desktopDevice.replaceChildren(option('正在读取远程设备…'));
+  desktopDeviceFeedback.textContent = '正在读取远程设备列表…';
+  desktopDeviceFeedback.className = 'desktop-device-feedback';
   desktopRefreshPromise = invoke('remote_control_devices', { profile: currentProfile })
     .then((devices) => {
-      const available = devices.filter((device) => device.deviceID !== currentProfile.deviceID && device.permission === 'ready');
+      const available = devices.filter((device) => device.deviceID !== currentProfile.deviceID);
       desktopDevices = new Map(available.map((device) => [device.deviceID, device]));
-      desktopDevice.replaceChildren(option(available.length ? `选择远程设备（${available.length}）` : '暂无可远控的在线设备'));
+      desktopDevice.replaceChildren(option(available.length ? `选择在线设备（${available.length}）` : '暂无在线'));
       for (const device of available) {
-        desktopDevice.append(option(`${device.name} · ${platformLabel(device.platform)}`, device.deviceID));
+        const state = device.permission === 'ready' ? '可远控' : device.permission === 'permission-required' ? '需要系统授权' : '远控暂不可用';
+        desktopDevice.append(option(`${device.name} · ${platformLabel(device.platform)} · ${state}`, device.deviceID));
       }
       if (desktopDevices.has(selectedID)) desktopDevice.value = selectedID;
       else if (available.length === 1) desktopDevice.value = available[0].deviceID;
+      desktopDeviceFeedback.textContent = available.length
+        ? `已读取 ${available.length} 台其他在线设备。`
+        : '远程设备列表已刷新，当前没有其他可远控设备。';
+      desktopDeviceFeedback.className = 'desktop-device-feedback success';
     })
     .catch((error) => {
-      desktopDevice.replaceChildren(option('远程设备读取失败，点击刷新重试'));
-      if (force) desktopHostStatus.textContent = `设备读取失败：${error}`;
+      desktopDevice.replaceChildren(option('远程设备列表读取失败'));
+      desktopDevices = new Map();
+      desktopDeviceFeedback.textContent = `设备读取失败：${error}`;
+      desktopDeviceFeedback.className = 'desktop-device-feedback error';
     })
     .finally(() => {
       desktopDevice.disabled = false;
@@ -378,6 +396,9 @@ function delay(milliseconds) {
 async function connectRemoteDesktop() {
   const targetDeviceID = desktopDevice.value;
   if (!desktopDevices.has(targetDeviceID)) throw new Error('请选择一台可远控的在线设备');
+  const target = desktopDevices.get(targetDeviceID);
+  if (target.permission === 'permission-required') throw new Error('对方设备在线，但尚未授予屏幕录制或辅助控制权限');
+  if (target.permission !== 'ready') throw new Error('对方设备在线，但远程控制当前不可用');
   if (activeDesktopSession) await disconnectRemoteDesktop(false);
   const generation = ++desktopGeneration;
   setDesktopSessionState('connecting', '正在等待对方设备响应…');
@@ -628,6 +649,28 @@ disconnectRemoteShellButton.addEventListener('click', () => {
 });
 
 document.querySelector('#refresh-desktop-devices').addEventListener('click', () => refreshRemoteControlDevices(true));
+checkUpdateButton.addEventListener('click', async () => {
+  checkUpdateButton.disabled = true;
+  updateStatus.className = '';
+  updateStatus.textContent = '正在连接 GitHub 检查最新发行版…';
+  try {
+    const update = await invoke('check_for_update');
+    if (!update.available) {
+      updateStatus.textContent = `当前已是最新版本 ${update.currentVersion}。`;
+      updateStatus.className = 'success';
+      return;
+    }
+    updateStatus.textContent = `发现 v${update.latestVersion}，正在下载并校验安装包…`;
+    const result = await invoke('download_and_install_update');
+    updateStatus.textContent = result.message;
+    updateStatus.className = 'success';
+  } catch (error) {
+    updateStatus.textContent = `检查或安装更新失败：${error}`;
+    updateStatus.className = 'error';
+  } finally {
+    checkUpdateButton.disabled = false;
+  }
+});
 connectRemoteDesktopButton.addEventListener('click', async () => {
   try {
     await connectRemoteDesktop();

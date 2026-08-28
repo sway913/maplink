@@ -105,7 +105,7 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.match(xtermLicense, /MIT License|Permission is hereby granted/);
 });
 
-test('v0.5.0 在第二个 Tab 顶部提供服务器中转远程桌面', async () => {
+test('v0.5.2 在第二个 Tab 顶部提供可靠的服务器中转远程桌面列表', async () => {
   const [html, script, rust, server, buildScript] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
@@ -135,11 +135,38 @@ test('v0.5.0 在第二个 Tab 顶部提供服务器中转远程桌面', async ()
   assert.match(rust, /JpegEncoder/);
   assert.match(rust, /move_mouse/);
   assert.match(rust, /danger_accept_invalid_certs/);
+  assert.match(rust, /ACCEPT_ENCODING, "identity"/);
+  assert.match(rust, /已重试 3 次/);
+  assert.match(script, /option\(available\.length \? `选择在线设备（\$\{available\.length\}）` : '暂无在线'\)/);
+  assert.match(script, /远程设备列表已刷新，当前没有其他可远控设备/);
+  assert.match(script, /设备读取失败/);
+  assert.match(script, /需要系统授权/);
+  assert.match(script, /refreshRemoteControlDevices\(\)/);
+  assert.doesNotMatch(script, /device\.permission === 'ready'\);/);
   assert.match(server, /remoteFrameLimit/);
   assert.match(server, /remoteSignature/);
   assert.match(server, /remoteSessionTTL/);
   assert.match(buildScript, /requireAdministrator/);
   assert.doesNotMatch(server, /WriteFile|os\.WriteFile/);
+});
+
+test('关于页可从 GitHub 校验并启动最新版安装程序', async () => {
+  const [html, script, rust] = await Promise.all([
+    read('../ui/index.html'),
+    read('../ui/app.js'),
+    read('../src-tauri/src/updates.rs'),
+  ]);
+
+  assert.match(html, /id="check-update"/);
+  assert.match(html, /id="update-status"/);
+  assert.match(html, /SHA-256/);
+  assert.match(script, /check_for_update/);
+  assert.match(script, /download_and_install_update/);
+  assert.match(rust, /api\.github\.com\/repos\/sway913\/maplink\/releases\/latest/);
+  assert.match(rust, /RELEASE_DOWNLOAD_PREFIX/);
+  assert.match(rust, /verify_download/);
+  assert.match(rust, /launch_installer/);
+  assert.match(rust, /Sha256::digest/);
 });
 
 test('桌面窗口使用 MapLink 用户可见名称', async () => {

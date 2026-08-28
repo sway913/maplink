@@ -79,6 +79,7 @@
             <button id="refresh-desktop-devices" type="button">刷新设备</button>
             <button class="primary" id="connect-remote-desktop" type="button">远程连接</button>
             <button id="disconnect-remote-desktop" type="button" disabled>断开</button>
+            <p id="desktop-device-feedback" class="desktop-device-feedback">正在读取远程设备列表…</p>
           </div>
           <div class="remote-screen" id="remote-screen" tabindex="0" aria-label="远程桌面画面">
             <img id="remote-screen-image" alt="远程桌面实时画面" draggable="false" hidden />
@@ -160,7 +161,15 @@
             </div>
           </div>
           <div class="about-content">
-            <div class="about-version"><span>当前版本</span><strong>版本 0.5.1</strong></div>
+            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.5.2</strong></div>
+            <section class="about-update" aria-labelledby="about-update-title">
+              <div>
+                <small>SOFTWARE UPDATE</small>
+                <h3 id="about-update-title">检查 GitHub 新版本</h3>
+                <p id="update-status">点击检查更新；发现新发行版后会校验 SHA-256，随后自动启动安装程序。</p>
+              </div>
+              <button class="primary" id="check-update" type="button">检查更新</button>
+            </section>
             <p class="about-intro">映链用于连接自有服务器与多台设备，统一管理 TCP/UDP 端口映射、服务器中转远程桌面、双向 SSH 终端、运行状态和客户端日志。</p>
             <div class="about-features" aria-label="主要能力">
               <span>Windows / macOS</span><span>Remote Desktop</span><span>SSH Remote Shell</span><span>TCP / UDP</span><span>本地配置</span>

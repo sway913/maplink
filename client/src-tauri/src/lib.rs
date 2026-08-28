@@ -14,11 +14,13 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 mod remote_control;
+mod updates;
 use remote_control::{
     remote_control_devices, remote_control_frame, remote_control_session, remote_host_status,
     send_remote_control_input, start_remote_control, start_remote_host, stop_remote_control,
     RemoteHostState,
 };
+use updates::{check_for_update, download_and_install_update};
 
 const FRPC_VERSION: &str = "0.71.0";
 
@@ -1030,7 +1032,9 @@ pub fn run() {
             remote_control_session,
             remote_control_frame,
             send_remote_control_input,
-            stop_remote_control
+            stop_remote_control,
+            check_for_update,
+            download_and_install_update
         ])
         .build(tauri::generate_context!())
         .expect("error while building MapLink Client");

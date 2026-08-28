@@ -198,6 +198,8 @@ impl RelayClient {
         let mut request = self
             .client
             .request(method, url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
             .header("X-MapLink-Timestamp", timestamp)
             .header("X-MapLink-Nonce", nonce)
             .header("X-MapLink-Signature", signature)
@@ -250,9 +252,21 @@ fn decode_response<R: for<'de> Deserialize<'de>>(
         }
         return Err(format!("远程中转服务返回 HTTP {status}"));
     }
-    response
-        .json::<R>()
-        .map_err(|error| format!("远程中转响应无效：{error}"))
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("未知")
+        .to_string();
+    let body = response
+        .bytes()
+        .map_err(|error| format!("读取远程中转响应失败：{error}"))?;
+    serde_json::from_slice::<R>(&body).map_err(|error| {
+        format!(
+            "远程中转响应不是有效 JSON（Content-Type: {content_type}，长度: {}）：{error}",
+            body.len()
+        )
+    })
 }
 
 fn manager_host(host: &str) -> String {
@@ -768,10 +782,18 @@ pub(crate) async fn remote_control_devices(
     profile: RemoteProfile,
 ) -> Result<Vec<RemoteDevice>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let relay = RelayClient::new(profile)?;
-        let response: RemoteDevicesResponse =
-            relay.empty_json(Method::GET, "/api/remote/devices")?;
-        Ok(response.devices)
+        let mut last_error = "未知错误".to_string();
+        for attempt in 0..3 {
+            let relay = RelayClient::new(profile.clone())?;
+            match relay.empty_json::<RemoteDevicesResponse>(Method::GET, "/api/remote/devices") {
+                Ok(response) => return Ok(response.devices),
+                Err(error) => last_error = error,
+            }
+            if attempt < 2 {
+                thread::sleep(Duration::from_millis(350));
+            }
+        }
+        Err(format!("读取远程设备列表失败（已重试 3 次）：{last_error}"))
     })
     .await
     .map_err(|error| format!("远程设备查询任务异常：{error}"))?
@@ -947,5 +969,16 @@ mod tests {
         assert!(buttons.contains(&Button::Right));
         track_pressed(&mut buttons, Button::Right, false);
         assert!(buttons.is_empty());
+    }
+
+    #[test]
+    fn remote_device_list_accepts_the_server_response_shape() {
+        let response: RemoteDevicesResponse = serde_json::from_str(
+            r#"{"devices":[{"deviceID":"desktop-a","name":"Desktop A","platform":"windows","permission":"ready"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(response.devices.len(), 1);
+        assert_eq!(response.devices[0].device_id, "desktop-a");
+        assert_eq!(response.devices[0].permission, "ready");
     }
 }
