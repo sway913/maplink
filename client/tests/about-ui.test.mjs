@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
-test('客户端把连接配置、远程控制和关于放在顶部 Tab', async () => {
+test('客户端把连接配置、远程连接和关于放在顶部 Tab', async () => {
   const [html, script, styles, tauriConfig, packageConfig, cargo] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
@@ -17,7 +17,7 @@ test('客户端把连接配置、远程控制和关于放在顶部 Tab', async (
 
   assert.match(html, /class="top-tabs"/);
   assert.match(html, /data-tab="config"[^>]*>连接配置/);
-  assert.match(html, /data-tab="remote"[^>]*>远程控制/);
+  assert.match(html, /data-tab="remote"[^>]*>远程连接/);
   assert.match(html, /data-tab="about"[^>]*>关于/);
   assert.match(html, /id="about-page"/);
   assert.match(html, /映链/);
@@ -53,6 +53,9 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
 
   for (const pattern of [
     /id="remote-page"/,
+    /id="remote-ssh-tab"/,
+    /data-remote-mode="ssh"[^>]*>SSH 连接/,
+    /id="remote-ssh-panel"/,
     /Windows OpenSSH Server/,
     /macOS 远程登录/,
     /开放本机控制入口/,
@@ -105,7 +108,7 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.match(xtermLicense, /MIT License|Permission is hereby granted/);
 });
 
-test('v0.5.2 在第二个 Tab 顶部提供可靠的服务器中转远程桌面列表', async () => {
+test('v0.6.0 通过二级 Tab 提供可靠的服务器中转远程桌面列表', async () => {
   const [html, script, rust, server, buildScript] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
@@ -116,13 +119,16 @@ test('v0.5.2 在第二个 Tab 顶部提供可靠的服务器中转远程桌面�
 
   for (const pattern of [
     /id="remote-control-enabled"/,
+    /id="remote-desktop-tab"/,
+    /data-remote-mode="desktop"[^>]*>远程控制/,
+    /id="remote-desktop-panel"/,
     /id="desktop-device"/,
     /id="connect-remote-desktop"/,
     /id="disconnect-remote-desktop"/,
     /id="remote-screen"/,
     /SERVER RELAY/,
   ]) assert.match(html, pattern);
-  assert.ok(html.indexOf('id="remote-screen"') < html.indexOf('class="remote-layout"'));
+  assert.match(script, /function switchRemoteMode/);
   for (const command of [
     'start_remote_host',
     'remote_control_devices',
@@ -185,7 +191,7 @@ test('Windows 与 macOS 使用独立原版 frpc 和原生 WebView 打包配置',
 
   assert.deepEqual(windowsConfig.bundle.targets, ['nsis']);
   assert.equal(windowsConfig.bundle.resources['resources/frpc.exe'], 'frpc.exe');
-  assert.equal(windowsConfig.bundle.windows.webviewInstallMode.type, 'offlineInstaller');
+  assert.equal(windowsConfig.bundle.windows.webviewInstallMode.type, 'downloadBootstrapper');
   assert.deepEqual(macosConfig.bundle.targets, ['app', 'dmg']);
   assert.equal(macosConfig.bundle.resources['resources/frpc'], 'frpc');
   assert.equal(macosConfig.bundle.macOS.minimumSystemVersion, '11.0');
@@ -207,4 +213,23 @@ test('完整包和程序文件使用 MapLink 名称', async () => {
     assert.doesNotMatch(content, /FRP-Desktop/);
   }
   assert.match(cargo, /name = "maplink-client"/);
+  assert.match(buildScript, /200MB/);
+  assert.match(smokeTest, /200MB/);
+  assert.match(macBuildScript, /200 \* 1024 \* 1024/);
+  assert.match(macSmokeTest, /200 \* 1024 \* 1024/);
+});
+
+test('云端 E2E 覆盖远程协议、二级 Tab 和浏览器连接流程', async () => {
+  const [workflow, config, spec] = await Promise.all([
+    read('../../.github/workflows/release.yml'),
+    read('../playwright.config.mjs'),
+    read('./e2e/remote-connections.spec.mjs'),
+  ]);
+  assert.match(workflow, /cloud-e2e:/);
+  assert.match(workflow, /TestRemoteRelayAuthenticatesAndMovesFramesAndInputWithoutPersistence/);
+  assert.match(workflow, /playwright install --with-deps chromium/);
+  assert.match(workflow, /npm run test:e2e/);
+  assert.match(config, /127\.0\.0\.1:4173/);
+  assert.match(spec, /start_remote_control/);
+  assert.match(spec, /暂无在线/);
 });

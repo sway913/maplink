@@ -19,7 +19,7 @@
       </header>
       <nav class="top-tabs" role="tablist" aria-label="客户端功能">
         <button class="top-tab active" id="config-tab" type="button" role="tab" aria-selected="true" aria-controls="config-page" data-tab="config">连接配置</button>
-        <button class="top-tab" id="remote-tab" type="button" role="tab" aria-selected="false" aria-controls="remote-page" data-tab="remote">远程控制</button>
+        <button class="top-tab" id="remote-tab" type="button" role="tab" aria-selected="false" aria-controls="remote-page" data-tab="remote">远程连接</button>
         <button class="top-tab" id="about-tab" type="button" role="tab" aria-selected="false" aria-controls="about-page" data-tab="about">关于</button>
       </nav>
       <section class="tab-page active" id="config-page" role="tabpanel" aria-labelledby="config-tab" data-tab-panel="config">
@@ -57,97 +57,105 @@
       <section class="tab-page" id="remote-page" role="tabpanel" aria-labelledby="remote-tab" data-tab-panel="remote" hidden>
         <section class="remote-hero">
           <div>
-            <small>REMOTE SHELL</small>
-            <h2>每台设备都能控制，也能被控制</h2>
-            <p>每台机器通过 MapLink 映射自己的 SSH 服务，再使用另一台机器的映射端口连接；A 能控制 B，B 也能反向控制 A。</p>
+            <small>REMOTE CONNECTION</small>
+            <h2>SSH 与远程桌面统一入口</h2>
+            <p>在下方二级 Tab 切换系统终端或服务器中转远程桌面；两种连接共用同一套 MapLink 设备身份与在线列表。</p>
           </div>
           <span class="platform-badge" id="remote-platform">正在识别平台</span>
         </section>
-        <section class="panel remote-desktop" aria-label="桌面远程控制">
-          <div class="desktop-toolbar">
-            <div>
-              <small>REMOTE DESKTOP · SERVER RELAY</small>
-              <h2>远程桌面</h2>
-              <p>通过 MapLink 服务器中转实时画面与鼠标键盘，不需要单独填写公网端口。</p>
-            </div>
-            <label class="remote-enable"><input id="remote-control-enabled" type="checkbox" />允许其他 MapLink 设备控制本机</label>
+        <nav class="remote-mode-tabs" role="tablist" aria-label="远程连接方式">
+          <button class="remote-mode-tab active" id="remote-ssh-tab" type="button" role="tab" aria-selected="true" aria-controls="remote-ssh-panel" data-remote-mode="ssh">SSH 连接</button>
+          <button class="remote-mode-tab" id="remote-desktop-tab" type="button" role="tab" aria-selected="false" aria-controls="remote-desktop-panel" data-remote-mode="desktop">远程控制</button>
+        </nav>
+        <section class="remote-mode-page active" id="remote-ssh-panel" role="tabpanel" aria-labelledby="remote-ssh-tab" data-remote-mode-panel="ssh">
+          <div class="remote-layout">
+            <section class="panel remote-setup">
+              <div class="section-title"><div><small>LOCAL ENDPOINT</small><h2>开放本机控制入口</h2><p>为当前机器分配一个唯一的公网端口，让另一台 MapLink 设备可以连接本机 SSH。</p></div></div>
+              <div class="grid">
+                <label>本机映射名称<input id="remote-host-name" value="remote-shell" pattern="[A-Za-z0-9_-]{1,32}" maxlength="32" /></label>
+                <label>本机 SSH 端口<input id="remote-host-local-port" type="number" min="1" max="65535" value="22" /></label>
+                <label>本机公网端口<input id="remote-host-public-port" type="number" min="1" max="65535" value="30022" /></label>
+                <label>本机 SSH 用户名<input id="sshUser" autocomplete="username" placeholder="当前系统用户名" maxlength="64" /></label>
+              </div>
+              <div class="remote-actions">
+                <button class="primary" id="add-remote-mapping" type="button">添加本机 SSH 映射</button>
+              </div>
+              <p class="remote-feedback" id="remote-host-feedback">A、B 两台机器要使用允许范围内的不同端口，例如 A 使用 30022、B 使用 30023。</p>
+            </section>
+            <aside class="panel remote-guide remote-target">
+              <small>REMOTE DEVICE</small>
+              <h2>连接另一台设备</h2>
+              <div class="target-fields">
+                <label>在线设备
+                  <select id="remote-device">
+                    <option value="">正在读取在线设备…</option>
+                  </select>
+                </label>
+                <label>对方系统
+                  <select id="remote-os">
+                    <option value="windows">Windows OpenSSH Server</option>
+                    <option value="macos">macOS 远程登录</option>
+                  </select>
+                </label>
+                <label>对方 SSH 用户名<input id="remote-user" autocomplete="username" placeholder="对方系统用户名" maxlength="64" /></label>
+                <label>对方公网端口<input id="remote-target-port" type="number" min="1" max="65535" value="30023" /></label>
+              </div>
+              <code id="remote-address">请填写服务器地址和 SSH 用户名</code>
+              <div class="remote-actions target-actions">
+                <button id="refresh-remote-devices" type="button">刷新设备</button>
+                <button id="copy-ssh-command" type="button">复制 SSH 命令</button>
+                <button class="primary" id="test-remote-session" type="button">连接终端</button>
+              </div>
+              <p class="in-app-note">连接后直接在下方终端操作，体验与系统终端一致。</p>
+              <p class="remote-feedback" id="remote-feedback">填写对方的 SSH 用户名和公网端口后连接终端。</p>
+              <ol id="remote-steps">
+                <li>在对方机器启用 SSH，并在 MapLink 添加本机映射。</li>
+                <li>两台机器保存配置并启动各自的 frpc。</li>
+                <li>输入对方的公网端口，再检测连接或执行命令。</li>
+              </ol>
+              <p class="remote-warning">MapLink 不保存 SSH 密码或私钥。远端命令的权限等同于所连接的系统账号，请优先使用最小权限账号和密钥认证。</p>
+            </aside>
           </div>
-          <div class="desktop-connect">
-            <label>在线远程设备
-              <select id="desktop-device"><option value="">正在读取在线设备…</option></select>
-            </label>
-            <button id="refresh-desktop-devices" type="button">刷新设备</button>
-            <button class="primary" id="connect-remote-desktop" type="button">远程连接</button>
-            <button id="disconnect-remote-desktop" type="button" disabled>断开</button>
-            <p id="desktop-device-feedback" class="desktop-device-feedback">正在读取远程设备列表…</p>
-          </div>
-          <div class="remote-screen" id="remote-screen" tabindex="0" aria-label="远程桌面画面">
-            <img id="remote-screen-image" alt="远程桌面实时画面" draggable="false" hidden />
-            <div id="remote-screen-placeholder">
-              <strong>选择在线设备后开始远程控制</strong>
-              <span>连接后点击画面即可发送鼠标与键盘输入</span>
+          <section class="remote-console" aria-label="SSH 交互式终端">
+            <div class="terminal-titlebar">
+              <span><i id="remote-terminal-indicator"></i><strong id="remote-terminal-status">SSH 未连接</strong></span>
+              <button id="disconnect-remote-shell" type="button" disabled>断开</button>
             </div>
-          </div>
-          <div class="desktop-statusbar">
-            <span><i id="desktop-session-indicator"></i><strong id="desktop-session-status">远程桌面未连接</strong></span>
-            <span id="desktop-frame-meta">服务器加密认证中转 · 不录屏、不落盘</span>
-          </div>
-          <p class="desktop-permission" id="desktop-host-status">远程控制主机未开启。Windows 将以管理员权限启动；macOS 首次使用需允许“屏幕录制”和“辅助功能”。</p>
-        </section>
-        <div class="remote-layout">
-          <section class="panel remote-setup">
-            <div class="section-title"><div><small>LOCAL ENDPOINT</small><h2>开放本机控制入口</h2><p>为当前机器分配一个唯一的公网端口，让另一台 MapLink 设备可以连接本机 SSH。</p></div></div>
-            <div class="grid">
-              <label>本机映射名称<input id="remote-host-name" value="remote-shell" pattern="[A-Za-z0-9_-]{1,32}" maxlength="32" /></label>
-              <label>本机 SSH 端口<input id="remote-host-local-port" type="number" min="1" max="65535" value="22" /></label>
-              <label>本机公网端口<input id="remote-host-public-port" type="number" min="1" max="65535" value="30022" /></label>
-              <label>本机 SSH 用户名<input id="sshUser" autocomplete="username" placeholder="当前系统用户名" maxlength="64" /></label>
-            </div>
-            <div class="remote-actions">
-              <button class="primary" id="add-remote-mapping" type="button">添加本机 SSH 映射</button>
-            </div>
-            <p class="remote-feedback" id="remote-host-feedback">A、B 两台机器要使用允许范围内的不同端口，例如 A 使用 30022、B 使用 30023。</p>
+            <div id="remote-terminal"></div>
           </section>
-          <aside class="panel remote-guide remote-target">
-            <small>REMOTE DEVICE</small>
-            <h2>连接另一台设备</h2>
-            <div class="target-fields">
-              <label>在线设备
-                <select id="remote-device">
-                  <option value="">正在读取在线设备…</option>
-                </select>
-              </label>
-              <label>对方系统
-                <select id="remote-os">
-                  <option value="windows">Windows OpenSSH Server</option>
-                  <option value="macos">macOS 远程登录</option>
-                </select>
-              </label>
-              <label>对方 SSH 用户名<input id="remote-user" autocomplete="username" placeholder="对方系统用户名" maxlength="64" /></label>
-              <label>对方公网端口<input id="remote-target-port" type="number" min="1" max="65535" value="30023" /></label>
+        </section>
+        <section class="remote-mode-page" id="remote-desktop-panel" role="tabpanel" aria-labelledby="remote-desktop-tab" data-remote-mode-panel="desktop" hidden>
+          <section class="panel remote-desktop" aria-label="桌面远程控制">
+            <div class="desktop-toolbar">
+              <div>
+                <small>REMOTE DESKTOP · SERVER RELAY</small>
+                <h2>远程桌面</h2>
+                <p>通过 MapLink 服务器中转实时画面与鼠标键盘，不需要单独填写公网端口。</p>
+              </div>
+              <label class="remote-enable"><input id="remote-control-enabled" type="checkbox" />允许其他 MapLink 设备控制本机</label>
             </div>
-            <code id="remote-address">请填写服务器地址和 SSH 用户名</code>
-            <div class="remote-actions target-actions">
-              <button id="refresh-remote-devices" type="button">刷新设备</button>
-              <button id="copy-ssh-command" type="button">复制 SSH 命令</button>
-              <button class="primary" id="test-remote-session" type="button">连接终端</button>
+            <div class="desktop-connect">
+              <label>在线远程设备
+                <select id="desktop-device"><option value="">正在读取在线设备…</option></select>
+              </label>
+              <button id="refresh-desktop-devices" type="button">刷新设备</button>
+              <button class="primary" id="connect-remote-desktop" type="button">远程连接</button>
+              <button id="disconnect-remote-desktop" type="button" disabled>断开</button>
+              <p id="desktop-device-feedback" class="desktop-device-feedback">正在读取远程设备列表…</p>
             </div>
-            <p class="in-app-note">连接后直接在下方终端操作，体验与系统终端一致。</p>
-            <p class="remote-feedback" id="remote-feedback">填写对方的 SSH 用户名和公网端口后连接终端。</p>
-            <ol id="remote-steps">
-              <li>在对方机器启用 SSH，并在 MapLink 添加本机映射。</li>
-              <li>两台机器保存配置并启动各自的 frpc。</li>
-              <li>输入对方的公网端口，再检测连接或执行命令。</li>
-            </ol>
-            <p class="remote-warning">MapLink 不保存 SSH 密码或私钥。远端命令的权限等同于所连接的系统账号，请优先使用最小权限账号和密钥认证。</p>
-          </aside>
-        </div>
-        <section class="remote-console" aria-label="SSH 交互式终端">
-          <div class="terminal-titlebar">
-            <span><i id="remote-terminal-indicator"></i><strong id="remote-terminal-status">SSH 未连接</strong></span>
-            <button id="disconnect-remote-shell" type="button" disabled>断开</button>
-          </div>
-          <div id="remote-terminal"></div>
+            <div class="remote-screen" id="remote-screen" tabindex="0" aria-label="远程桌面画面">
+              <img id="remote-screen-image" alt="远程桌面实时画面" draggable="false" hidden />
+              <div id="remote-screen-placeholder">
+                <strong>选择在线设备后开始远程控制</strong>
+                <span>连接后点击画面即可发送鼠标与键盘输入</span>
+              </div>
+            </div>
+            <div class="desktop-statusbar">
+              <span><i id="desktop-session-indicator"></i><strong id="desktop-session-status">远程桌面未连接</strong></span>
+              <span id="desktop-frame-meta">服务器加密认证中转 · 不录屏、不落盘</span>
+            </div>
+            <p class="desktop-permission" id="desktop-host-status">远程控制主机未开启。Windows 将以管理员权限启动；macOS 首次使用需允许“屏幕录制”和“辅助功能”。</p>
+          </section>
         </section>
       </section>
       <section class="tab-page" id="about-page" role="tabpanel" aria-labelledby="about-tab" data-tab-panel="about" hidden>
@@ -161,7 +169,7 @@
             </div>
           </div>
           <div class="about-content">
-            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.5.2</strong></div>
+            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.6.0</strong></div>
             <section class="about-update" aria-labelledby="about-update-title">
               <div>
                 <small>SOFTWARE UPDATE</small>

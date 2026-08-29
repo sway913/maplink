@@ -24,6 +24,7 @@ $releaseVersion = "v$configuredVersion"
 $portableZip = Join-Path $distDir "MapLink-Complete-$releaseVersion-win64.zip"
 $installerOutput = Join-Path $distDir "MapLink-Complete-Setup-$releaseVersion-win64.exe"
 $checksumOutput = Join-Path $distDir "MapLink-$releaseVersion-windows-x64-SHA256SUMS.txt"
+$maxPackageBytes = 200MB
 $frpc = Join-Path $tauriDir 'resources\frpc.exe'
 
 if (-not (Test-Path -LiteralPath $frpc -PathType Leaf)) {
@@ -82,6 +83,13 @@ if (Test-Path -LiteralPath $portableZip) {
 }
 Compress-Archive -Path (Join-Path $resolvedStaging '*') -DestinationPath $portableZip -CompressionLevel Optimal
 Copy-Item -LiteralPath $installer.FullName -Destination $installerOutput -Force
+
+foreach ($packagePath in @($portableZip, $installerOutput)) {
+    $package = Get-Item -LiteralPath $packagePath
+    if ($package.Length -ge $maxPackageBytes) {
+        throw "发布包必须小于 200 MB：$($package.Name) 当前为 $([math]::Round($package.Length / 1MB, 2)) MB"
+    }
+}
 
 $hashes = Get-FileHash -Algorithm SHA256 -LiteralPath $portableZip, $installerOutput | Sort-Object Path
 $hashLines = $hashes | ForEach-Object { '{0}  {1}' -f $_.Hash.ToLowerInvariant(), (Split-Path $_.Path -Leaf) }

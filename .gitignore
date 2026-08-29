@@ -7,6 +7,8 @@ web/out/
 web/.vinext/
 web/.wrangler/
 client/node_modules/
+client/playwright-report/
+client/test-results/
 client/src-tauri/target/
 client/src-tauri/.frp-download/
 .env

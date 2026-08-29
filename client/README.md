@@ -11,6 +11,7 @@
 - v0.5.0 在“远程控制”页顶部加入服务器中转远程桌面，可从在线设备列表直接建立会话并实时发送画面、鼠标、键盘和滚轮事件；
 - v0.5.1 修复开启远控主机后、无会话时权限探测也会释放鼠标右键的问题，并补全服务端远控能力标识；
 - v0.5.2 在“关于”页加入 GitHub 发行版检查、SHA-256 校验、自动启动安装程序，并让远控列表定时刷新且明确区分空列表、权限未就绪与读取失败；
+- v0.6.0 把 SSH 与远程桌面合并到“远程连接”的二级 Tab，Windows 安装器改用 WebView2 在线引导并强制全部发布包小于 200 MB，同时增加云端浏览器 E2E 与完整远控中转协议测试；
 - 被控端必须显式开启“允许其他 MapLink 设备控制本机”；服务端仅在内存中保留最新一帧和有上限的输入队列，超时自动回收，不录屏、不落盘；
 - Windows 客户端通过应用清单要求管理员权限，以便控制提升权限的窗口；macOS 首次使用会请求“屏幕录制”和“辅助功能”系统权限；
 - 两个平台都提供“远程控制”页面，可把 B 机器的 SSH 服务通过 frpc 映射给 A 机器，并生成可供终端或 Codex 使用的标准 SSH 命令；
@@ -39,4 +40,4 @@
 
 开发环境需要 Node.js、Rust 与 Tauri 2 CLI。`resources/frpc.exe` 来源于官方 `frp_0.71.0_windows_amd64.zip`，下载包 SHA-256 为 `9e5062e3e5cf07e67144a3a4acf175ef6a2486f3605dd6cf288bae34ab39819f`；`resources/frpc` 来源于官方 `frp_0.71.0_darwin_arm64.tar.gz`，下载包 SHA-256 为 `45be02b186860d375ed49a8941ae9569628a54bf14e67fc36b29c98c99dabcc6`。
 
-Windows 运行 `scripts/build-complete.ps1` 生成 NSIS 安装包和便携 ZIP；Apple Silicon Mac 运行 `scripts/build-macos.sh` 生成 DMG 和 APP ZIP。推送新版本到 `main` 后，GitHub Actions 会自动完成两个平台的打包与 Release 发布。
+Windows 运行 `scripts/build-complete.ps1` 生成 NSIS 安装包和便携 ZIP；Apple Silicon Mac 运行 `scripts/build-macos.sh` 生成 DMG 和 APP ZIP。推送新版本到 `main` 后，GitHub Actions 会先运行远控协议与浏览器 E2E，再完成两个平台打包、200 MB 体积检查与 Release 发布。

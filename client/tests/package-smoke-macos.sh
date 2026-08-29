@@ -10,9 +10,14 @@ release_version="v$app_version"
 dmg="$dist_dir/MapLink-$release_version-macos-arm64.dmg"
 archive="$dist_dir/MapLink-$release_version-macos-arm64.app.zip"
 checksums="$dist_dir/MapLink-$release_version-macos-arm64-SHA256SUMS.txt"
+max_package_bytes=$((200 * 1024 * 1024))
 
 for asset in "$dmg" "$archive" "$checksums"; do
   [[ -f "$asset" ]] || { echo "缺少发布文件：$asset" >&2; exit 1; }
+done
+for package in "$dmg" "$archive"; do
+  package_size="$(stat -f%z "$package")"
+  (( package_size < max_package_bytes )) || { echo "发布包必须小于 200 MB：$(basename "$package") 当前为 $package_size 字节" >&2; exit 1; }
 done
 (
   cd "$dist_dir"

@@ -224,10 +224,39 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  cloud-e2e:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache: false
+      - name: Exercise the complete remote relay protocol
+        working-directory: server
+        run: go test ./internal/manager -run 'TestRemoteRelayAuthenticatesAndMovesFramesAndInputWithoutPersistence' -count=1 -v
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install browser E2E runtime
+        working-directory: client
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run complete client connection E2E
+        working-directory: client
+        run: npm run test:e2e
+
   release:
     needs:
       - windows-client
       - macos-client
+      - cloud-e2e
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -254,6 +283,12 @@ jobs:
       - name: Verify release assets
         run: |
           test "$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')" = "6"
+          max_package_bytes=$((200 * 1024 * 1024))
+          for package in dist/*; do
+            [[ "$package" == *SHA256SUMS.txt ]] && continue
+            package_size="$(stat -c%s "$package")"
+            (( package_size < max_package_bytes )) || { echo "发布包必须小于 200 MB：$package 当前为 $package_size 字节" >&2; exit 1; }
+          done
           cd dist
           sha256sum -c MapLink-${{ steps.release.outputs.tag }}-windows-x64-SHA256SUMS.txt
           sha256sum -c MapLink-${{ steps.release.outputs.tag }}-macos-arm64-SHA256SUMS.txt

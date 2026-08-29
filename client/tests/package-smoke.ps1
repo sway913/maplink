@@ -15,6 +15,7 @@ $releaseVersion = "v$AppVersion"
 $portableZip = Join-Path $DistDir "MapLink-Complete-$releaseVersion-win64.zip"
 $installer = Join-Path $DistDir "MapLink-Complete-Setup-$releaseVersion-win64.exe"
 $checksumFile = Join-Path $DistDir "MapLink-$releaseVersion-windows-x64-SHA256SUMS.txt"
+$maxPackageBytes = 200MB
 
 if (-not (Test-Path -LiteralPath $portableZip -PathType Leaf)) {
     throw "缺少便携完整包：$portableZip"
@@ -41,6 +42,13 @@ foreach ($line in $checksumLines) {
     $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $assetPath).Hash.ToLowerInvariant()
     if ($actualHash -ne $Matches[1]) {
         throw "SHA-256 校验失败：$assetPath"
+    }
+}
+
+foreach ($packagePath in @($portableZip, $installer)) {
+    $package = Get-Item -LiteralPath $packagePath
+    if ($package.Length -ge $maxPackageBytes) {
+        throw "发布包必须小于 200 MB：$($package.Name) 当前为 $([math]::Round($package.Length / 1MB, 2)) MB"
     }
 }
 

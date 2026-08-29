@@ -57,8 +57,16 @@ release_version="v$configured_version"
 release_dmg="$dist_dir/MapLink-$release_version-macos-arm64.dmg"
 release_zip="$dist_dir/MapLink-$release_version-macos-arm64.app.zip"
 checksum_file="$dist_dir/MapLink-$release_version-macos-arm64-SHA256SUMS.txt"
+max_package_bytes=$((200 * 1024 * 1024))
 cp "$dmg_path" "$release_dmg"
 ditto -c -k --sequesterRsrc --keepParent "$app_path" "$release_zip"
+for package in "$release_dmg" "$release_zip"; do
+  package_size="$(stat -f%z "$package")"
+  if (( package_size >= max_package_bytes )); then
+    echo "发布包必须小于 200 MB：$(basename "$package") 当前为 $package_size 字节" >&2
+    exit 1
+  fi
+done
 (
   cd "$dist_dir"
   shasum -a 256 "$(basename "$release_dmg")" "$(basename "$release_zip")" > "$(basename "$checksum_file")"

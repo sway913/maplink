@@ -80,12 +80,8 @@ function switchTab(name, focus = false) {
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (name === 'remote') {
-    refreshOnlineDevices(true);
-    refreshRemoteControlDevices(true);
-    window.setTimeout(() => {
-      terminalFitAddon.fit();
-      terminal.focus();
-    }, 80);
+    const activeMode = document.querySelector('[data-remote-mode].active')?.dataset.remoteMode || 'ssh';
+    switchRemoteMode(activeMode);
   }
 }
 
@@ -140,6 +136,40 @@ function setRemoteFeedback(message, type = '') {
   remoteFeedback.textContent = message;
   remoteFeedback.classList.toggle('success', type === 'success');
   remoteFeedback.classList.toggle('error', type === 'error');
+}
+
+function switchRemoteMode(name, focus = false) {
+  for (const button of document.querySelectorAll('[data-remote-mode]')) {
+    const active = button.dataset.remoteMode === name;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+    if (active && focus) button.focus();
+  }
+  for (const panel of document.querySelectorAll('[data-remote-mode-panel]')) {
+    const active = panel.dataset.remoteModePanel === name;
+    panel.hidden = !active;
+    panel.classList.toggle('active', active);
+  }
+  if (name === 'desktop') {
+    refreshRemoteControlDevices(true);
+  } else {
+    refreshOnlineDevices(true);
+    window.setTimeout(() => {
+      terminalFitAddon.fit();
+      terminal.focus();
+    }, 80);
+  }
+}
+
+for (const button of document.querySelectorAll('[data-remote-mode]')) {
+  button.addEventListener('click', () => switchRemoteMode(button.dataset.remoteMode));
+  button.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    const buttons = [...document.querySelectorAll('[data-remote-mode]')];
+    const direction = event.key === 'ArrowRight' ? 1 : -1;
+    const index = (buttons.indexOf(button) + direction + buttons.length) % buttons.length;
+    switchRemoteMode(buttons[index].dataset.remoteMode, true);
+  });
 }
 
 function setRemoteShellState(state, message) {
