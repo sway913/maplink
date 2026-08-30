@@ -42,11 +42,14 @@ test('客户端把连接配置、远程连接和关于放在顶部 Tab', async (
   assert.match(cargo, new RegExp(`version = "${versionPattern}"`));
 });
 
-test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令行', async () => {
-  const [html, script, rust, xterm, xtermLicense] = await Promise.all([
+test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留本机', async () => {
+  const [html, script, rust, sshSetup, remoteControl, server, xterm, xtermLicense] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
     read('../src-tauri/src/lib.rs'),
+    read('../src-tauri/src/ssh_setup.rs'),
+    read('../src-tauri/src/remote_control.rs'),
+    read('../../server/internal/manager/remote.go'),
     read('../ui/vendor/xterm/xterm.js'),
     read('../ui/vendor/xterm/XTERM-LICENSE'),
   ]);
@@ -56,6 +59,9 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
     /id="remote-ssh-tab"/,
     /data-remote-mode="ssh"[^>]*>SSH 连接/,
     /id="remote-ssh-panel"/,
+    /id="ssh-readiness"/,
+    /id="install-openssh"/,
+    /id="refresh-ssh-readiness"/,
     /Windows OpenSSH Server/,
     /macOS 远程登录/,
     /开放本机控制入口/,
@@ -80,6 +86,9 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.doesNotMatch(html, /id="remote-command-history"/);
   assert.doesNotMatch(html, /id="remote-output"/);
   assert.match(script, /online_ssh_devices/);
+  assert.match(script, /ssh_readiness/);
+  assert.match(script, /install_openssh/);
+  assert.match(script, /checkSSHReadiness/);
   assert.match(script, /在线设备列表已刷新/);
   assert.match(script, /new window\.Terminal/);
   assert.match(script, /start_remote_shell/);
@@ -104,11 +113,25 @@ test('远程控制页面通过标准 SSH 映射支持 Windows 与 macOS 命令�
   assert.match(rust, /remote_platform/);
   assert.match(rust, /hide_windows_console\(&mut command\)/);
   assert.match(rust, /online_ssh_devices/);
+  assert.match(rust, /ssh_readiness/);
+  assert.match(rust, /install_openssh/);
+  assert.match(sshSetup, /maplink_ed25519/);
+  assert.match(sshSetup, /OpenSSH\.Client/);
+  assert.match(sshSetup, /OpenSSH\.Server/);
+  assert.match(sshSetup, /systemsetup -setremotelogin on/);
+  assert.match(sshSetup, /authorized_keys/);
+  assert.match(sshSetup, /administrators_authorized_keys/);
+  assert.match(sshSetup, /IdentitiesOnly=yes/);
+  assert.doesNotMatch(remoteControl, /private.?key/i);
+  assert.match(remoteControl, /controllerSSHPublicKey/);
+  assert.match(remoteControl, /sshAuthorized/);
+  assert.match(server, /SSHPublicKey/);
+  assert.match(server, /validSSHPublicKey/);
   assert.ok(xterm.length > 200_000);
   assert.match(xtermLicense, /MIT License|Permission is hereby granted/);
 });
 
-test('v0.6.0 通过二级 Tab 提供可靠的服务器中转远程桌面列表', async () => {
+test('v0.6.1 通过二级 Tab 提供可靠的服务器中转远程桌面列表', async () => {
   const [html, script, rust, server, buildScript] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),

@@ -94,6 +94,10 @@ pub(crate) struct RemoteSession {
     target_device_id: String,
     #[serde(rename = "controllerDeviceID")]
     controller_device_id: String,
+    #[serde(default)]
+    controller_ssh_public_key: String,
+    #[serde(default)]
+    ssh_authorized: bool,
     state: String,
     #[serde(default)]
     error: String,
@@ -569,6 +573,8 @@ fn serve_remote_session(
     generation: u64,
     generation_state: &AtomicU64,
 ) -> Result<(), String> {
+    let ssh_authorized = !session.controller_ssh_public_key.is_empty()
+        && crate::ssh_setup::authorize_public_key(&session.controller_ssh_public_key).is_ok();
     let mut environment = capture_environment()?;
     let accept_path = format!("/api/remote/sessions/{}/accept", session.id);
     let accept = serde_json::json!({
@@ -576,6 +582,7 @@ fn serve_remote_session(
         "screenY": environment.screen_y,
         "screenWidth": environment.screen_width,
         "screenHeight": environment.screen_height,
+        "sshAuthorized": ssh_authorized,
         "error": "",
     });
     let _: RemoteSession = relay.json_request(Method::POST, &accept_path, &accept)?;
@@ -809,9 +816,13 @@ pub(crate) async fn start_remote_control(
 ) -> Result<RemoteSession, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let relay = RelayClient::new(profile.clone())?;
+        let controller_ssh_public_key = crate::ssh_setup::ensure_identity()
+            .map(|identity| identity.public_key)
+            .unwrap_or_default();
         let request = serde_json::json!({
             "targetDeviceID": target_device_id,
             "controllerDeviceID": profile.device_id,
+            "controllerSSHPublicKey": controller_ssh_public_key,
         });
         relay.json_request(Method::POST, "/api/remote/sessions", &request)
     })

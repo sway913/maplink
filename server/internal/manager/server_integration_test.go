@@ -154,12 +154,15 @@ func TestHealthAdvertisesRemoteControlRelay(t *testing.T) {
 	server := integrationServer(t)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/health", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"remote-control"`) || !strings.Contains(response.Body.String(), `"version":"0.5.1"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"remote-control"`) || !strings.Contains(response.Body.String(), `"version":"0.6.1"`) {
 		t.Fatalf("health endpoint does not advertise remote control: %d %s", response.Code, response.Body.String())
 	}
 }
 
 func TestRemoteRelayAuthenticatesAndMovesFramesAndInputWithoutPersistence(t *testing.T) {
+	if validSSHPublicKey("-----BEGIN OPENSSH PRIVATE KEY-----") || !validSSHPublicKey("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH maplink-managed") {
+		t.Fatal("SSH public key validation accepted private material or rejected a valid Ed25519 public key")
+	}
 	if signature := remoteSignature("1234567890123456", http.MethodPost, "/api/remote/sessions", "1", "abcdefghijklmnop", []byte("{}")); signature != "537e596ef44b757fc3113680aa0a1a6e6760bd0dbffec3aa33e5de8bea123c2d" {
 		t.Fatalf("unexpected remote HMAC signature: %s", signature)
 	}
@@ -181,7 +184,7 @@ func TestRemoteRelayAuthenticatesAndMovesFramesAndInputWithoutPersistence(t *tes
 		t.Fatalf("device listing failed: %d %s", devices.Code, devices.Body.String())
 	}
 
-	createBody := []byte(`{"targetDeviceID":"office-pc","controllerDeviceID":"home-mac"}`)
+	createBody := []byte(`{"targetDeviceID":"office-pc","controllerDeviceID":"home-mac","controllerSSHPublicKey":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH maplink-managed"}`)
 	created := remoteRelayRequest(t, server, http.MethodPost, "/api/remote/sessions", createBody, "create-session-nonce1")
 	if created.Code != http.StatusCreated {
 		t.Fatalf("session creation failed: %d %s", created.Code, created.Body.String())
@@ -193,13 +196,13 @@ func TestRemoteRelayAuthenticatesAndMovesFramesAndInputWithoutPersistence(t *tes
 
 	hostPath := "/api/remote/hosts/office-pc/sessions"
 	hostSessions := remoteRelayRequest(t, server, http.MethodGet, hostPath, nil, "host-session-nonce01")
-	if hostSessions.Code != http.StatusOK || !strings.Contains(hostSessions.Body.String(), session.ID) {
+	if hostSessions.Code != http.StatusOK || !strings.Contains(hostSessions.Body.String(), session.ID) || !strings.Contains(hostSessions.Body.String(), `"controllerSSHPublicKey":"ssh-ed25519 `) {
 		t.Fatalf("host did not receive session: %d %s", hostSessions.Code, hostSessions.Body.String())
 	}
 
 	acceptPath := "/api/remote/sessions/" + session.ID + "/accept"
-	accepted := remoteRelayRequest(t, server, http.MethodPost, acceptPath, []byte(`{"screenX":0,"screenY":0,"screenWidth":1920,"screenHeight":1080,"error":""}`), "accept-session-nonce1")
-	if accepted.Code != http.StatusOK || !strings.Contains(accepted.Body.String(), `"state":"active"`) {
+	accepted := remoteRelayRequest(t, server, http.MethodPost, acceptPath, []byte(`{"screenX":0,"screenY":0,"screenWidth":1920,"screenHeight":1080,"sshAuthorized":true,"error":""}`), "accept-session-nonce1")
+	if accepted.Code != http.StatusOK || !strings.Contains(accepted.Body.String(), `"state":"active"`) || !strings.Contains(accepted.Body.String(), `"sshAuthorized":true`) {
 		t.Fatalf("session acceptance failed: %d %s", accepted.Code, accepted.Body.String())
 	}
 

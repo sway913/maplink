@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,34 +43,38 @@ type remoteHost struct {
 }
 
 type remoteSession struct {
-	ID                 string
-	TargetDeviceID     string
-	ControllerDeviceID string
-	State              string
-	Error              string
-	ScreenX            int
-	ScreenY            int
-	ScreenWidth        int
-	ScreenHeight       int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	FrameSequence      uint64
-	Frame              []byte
-	InputSequence      uint64
-	Inputs             []sequencedRemoteInput
+	ID                     string
+	TargetDeviceID         string
+	ControllerDeviceID     string
+	ControllerSSHPublicKey string
+	SSHAuthorized          bool
+	State                  string
+	Error                  string
+	ScreenX                int
+	ScreenY                int
+	ScreenWidth            int
+	ScreenHeight           int
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	FrameSequence          uint64
+	Frame                  []byte
+	InputSequence          uint64
+	Inputs                 []sequencedRemoteInput
 }
 
 type remoteSessionView struct {
-	ID                 string `json:"id"`
-	TargetDeviceID     string `json:"targetDeviceID"`
-	ControllerDeviceID string `json:"controllerDeviceID"`
-	State              string `json:"state"`
-	Error              string `json:"error,omitempty"`
-	ScreenX            int    `json:"screenX"`
-	ScreenY            int    `json:"screenY"`
-	ScreenWidth        int    `json:"screenWidth"`
-	ScreenHeight       int    `json:"screenHeight"`
-	FrameSequence      uint64 `json:"frameSequence"`
+	ID                     string `json:"id"`
+	TargetDeviceID         string `json:"targetDeviceID"`
+	ControllerDeviceID     string `json:"controllerDeviceID"`
+	ControllerSSHPublicKey string `json:"controllerSSHPublicKey,omitempty"`
+	SSHAuthorized          bool   `json:"sshAuthorized"`
+	State                  string `json:"state"`
+	Error                  string `json:"error,omitempty"`
+	ScreenX                int    `json:"screenX"`
+	ScreenY                int    `json:"screenY"`
+	ScreenWidth            int    `json:"screenWidth"`
+	ScreenHeight           int    `json:"screenHeight"`
+	FrameSequence          uint64 `json:"frameSequence"`
 }
 
 type remoteInput struct {
@@ -108,6 +113,23 @@ func validRemoteDeviceID(value string) bool {
 		}
 	}
 	return true
+}
+
+func validSSHPublicKey(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) > 2048 || strings.ContainsAny(value, "\r\n\x00") {
+		return false
+	}
+	parts := strings.Fields(value)
+	if len(parts) < 2 || parts[0] != "ssh-ed25519" {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(parts[1])
+	return err == nil && len(decoded) == 51 &&
+		string(decoded[:15]) == "\x00\x00\x00\x0bssh-ed25519" &&
+		string(decoded[15:19]) == "\x00\x00\x00\x20"
 }
 
 func remoteSignature(token, method, requestURI, timestamp, nonce string, body []byte) string {
@@ -191,7 +213,9 @@ func (h *remoteHub) cleanupLocked(now time.Time) {
 func viewRemoteSession(session *remoteSession) remoteSessionView {
 	return remoteSessionView{
 		ID: session.ID, TargetDeviceID: session.TargetDeviceID, ControllerDeviceID: session.ControllerDeviceID,
-		State: session.State, Error: session.Error, ScreenX: session.ScreenX, ScreenY: session.ScreenY,
+		ControllerSSHPublicKey: session.ControllerSSHPublicKey,
+		SSHAuthorized:          session.SSHAuthorized,
+		State:                  session.State, Error: session.Error, ScreenX: session.ScreenX, ScreenY: session.ScreenY,
 		ScreenWidth: session.ScreenWidth, ScreenHeight: session.ScreenHeight, FrameSequence: session.FrameSequence,
 	}
 }
@@ -279,13 +303,15 @@ func (s *Server) remoteCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		TargetDeviceID     string `json:"targetDeviceID"`
-		ControllerDeviceID string `json:"controllerDeviceID"`
+		TargetDeviceID         string `json:"targetDeviceID"`
+		ControllerDeviceID     string `json:"controllerDeviceID"`
+		ControllerSSHPublicKey string `json:"controllerSSHPublicKey"`
 	}
 	if !decodeRemoteJSON(w, body, &request) {
 		return
 	}
-	if !validRemoteDeviceID(request.TargetDeviceID) || !validRemoteDeviceID(request.ControllerDeviceID) || request.TargetDeviceID == request.ControllerDeviceID {
+	request.ControllerSSHPublicKey = strings.TrimSpace(request.ControllerSSHPublicKey)
+	if !validRemoteDeviceID(request.TargetDeviceID) || !validRemoteDeviceID(request.ControllerDeviceID) || request.TargetDeviceID == request.ControllerDeviceID || !validSSHPublicKey(request.ControllerSSHPublicKey) {
 		writeError(w, http.StatusBadRequest, errors.New("远程会话设备无效"))
 		return
 	}
@@ -318,7 +344,8 @@ func (s *Server) remoteCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	session := &remoteSession{
 		ID: id, TargetDeviceID: request.TargetDeviceID, ControllerDeviceID: request.ControllerDeviceID,
-		State: "pending", CreatedAt: now, UpdatedAt: now,
+		ControllerSSHPublicKey: request.ControllerSSHPublicKey,
+		State:                  "pending", CreatedAt: now, UpdatedAt: now,
 	}
 	s.remote.sessions[id] = session
 	view := viewRemoteSession(session)
@@ -357,11 +384,12 @@ func (s *Server) remoteAcceptSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		ScreenX      int    `json:"screenX"`
-		ScreenY      int    `json:"screenY"`
-		ScreenWidth  int    `json:"screenWidth"`
-		ScreenHeight int    `json:"screenHeight"`
-		Error        string `json:"error"`
+		ScreenX       int    `json:"screenX"`
+		ScreenY       int    `json:"screenY"`
+		ScreenWidth   int    `json:"screenWidth"`
+		ScreenHeight  int    `json:"screenHeight"`
+		SSHAuthorized bool   `json:"sshAuthorized"`
+		Error         string `json:"error"`
 	}
 	if !decodeRemoteJSON(w, body, &request) {
 		return
@@ -387,6 +415,7 @@ func (s *Server) remoteAcceptSession(w http.ResponseWriter, r *http.Request) {
 		session.State = "active"
 		session.ScreenX, session.ScreenY = request.ScreenX, request.ScreenY
 		session.ScreenWidth, session.ScreenHeight = request.ScreenWidth, request.ScreenHeight
+		session.SSHAuthorized = request.SSHAuthorized
 	}
 	session.UpdatedAt = time.Now()
 	view := viewRemoteSession(session)

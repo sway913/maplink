@@ -136,7 +136,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":   "ok",
-			"version":  "0.5.1",
+			"version":  "0.6.1",
 			"features": []string{"remote-control"},
 		})
 	})

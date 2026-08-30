@@ -28,6 +28,10 @@ const desktopHostStatus = document.querySelector('#desktop-host-status');
 const desktopDeviceFeedback = document.querySelector('#desktop-device-feedback');
 const checkUpdateButton = document.querySelector('#check-update');
 const updateStatus = document.querySelector('#update-status');
+const sshReadiness = document.querySelector('#ssh-readiness');
+const sshReadinessTitle = document.querySelector('#ssh-readiness-title');
+const sshReadinessMessage = document.querySelector('#ssh-readiness-message');
+const installOpenSSHButton = document.querySelector('#install-openssh');
 const terminal = new window.Terminal({
   cursorBlink: true,
   cursorStyle: 'block',
@@ -65,6 +69,7 @@ let activeDesktopSession = null;
 let desktopGeneration = 0;
 let desktopInputQueue = [];
 let desktopInputTimer;
+let sshReadinessPromise;
 
 function switchTab(name, focus = false) {
   for (const button of document.querySelectorAll('[data-tab]')) {
@@ -153,12 +158,43 @@ function switchRemoteMode(name, focus = false) {
   if (name === 'desktop') {
     refreshRemoteControlDevices(true);
   } else {
+    checkSSHReadiness();
     refreshOnlineDevices(true);
     window.setTimeout(() => {
       terminalFitAddon.fit();
       terminal.focus();
     }, 80);
   }
+}
+
+function paintSSHReadiness(status) {
+  const ready = status.clientInstalled && status.serverInstalled && status.serverRunning && status.keyAvailable;
+  sshReadiness.className = `ssh-readiness ${ready ? 'ready' : 'warning'}`;
+  sshReadinessTitle.textContent = ready ? '本机 SSH 已开袋即食' : '本机 SSH 需要配置';
+  sshReadinessMessage.textContent = status.message;
+  installOpenSSHButton.hidden = ready;
+  installOpenSSHButton.textContent = status.platform === 'macos'
+    ? '开启 macOS 远程登录'
+    : status.clientInstalled && status.serverInstalled
+      ? '启动 OpenSSH 服务'
+      : '安装并启用 OpenSSH';
+}
+
+async function checkSSHReadiness(force = false) {
+  if (sshReadinessPromise && !force) return sshReadinessPromise;
+  sshReadinessTitle.textContent = '正在检测本机 OpenSSH…';
+  sshReadinessMessage.textContent = '正在检查 SSH 客户端、服务端和 MapLink 专用免密密钥。';
+  installOpenSSHButton.hidden = true;
+  sshReadinessPromise = invoke('ssh_readiness', { ensureIdentity: true })
+    .then(paintSSHReadiness)
+    .catch((error) => {
+      sshReadiness.className = 'ssh-readiness error';
+      sshReadinessTitle.textContent = 'OpenSSH 检测失败';
+      sshReadinessMessage.textContent = String(error);
+      installOpenSSHButton.hidden = false;
+    })
+    .finally(() => { sshReadinessPromise = undefined; });
+  return sshReadinessPromise;
 }
 
 for (const button of document.querySelectorAll('[data-remote-mode]')) {
@@ -443,7 +479,10 @@ async function connectRemoteDesktop() {
   }
   if (generation !== desktopGeneration) return;
   if (session.state !== 'active') throw new Error(session.error || '对方设备响应超时');
-  setDesktopSessionState('connected', `已连接 ${desktopDevices.get(targetDeviceID).name}`);
+  setDesktopSessionState(
+    'connected',
+    `已连接 ${desktopDevices.get(targetDeviceID).name}${session.sshAuthorized ? ' · SSH 免密已配置' : ''}`,
+  );
   remoteScreen.focus();
   remoteScreenPlaceholder.hidden = true;
   remoteScreenImage.hidden = false;
@@ -660,6 +699,23 @@ document.querySelector('#remote-target-port').addEventListener('input', updateRe
 document.querySelector('#remote-os').addEventListener('change', updateRemoteGuide);
 remoteDevice.addEventListener('change', applySelectedDevice);
 document.querySelector('#refresh-remote-devices').addEventListener('click', () => refreshOnlineDevices(true));
+document.querySelector('#refresh-ssh-readiness').addEventListener('click', () => checkSSHReadiness(true));
+installOpenSSHButton.addEventListener('click', async () => {
+  installOpenSSHButton.disabled = true;
+  sshReadiness.className = 'ssh-readiness warning';
+  sshReadinessTitle.textContent = '正在配置 OpenSSH…';
+  sshReadinessMessage.textContent = '系统可能显示管理员授权窗口，请完成授权。';
+  try {
+    paintSSHReadiness(await invoke('install_openssh'));
+  } catch (error) {
+    sshReadiness.className = 'ssh-readiness error';
+    sshReadinessTitle.textContent = 'OpenSSH 配置失败';
+    sshReadinessMessage.textContent = String(error);
+    installOpenSSHButton.hidden = false;
+  } finally {
+    installOpenSSHButton.disabled = false;
+  }
+});
 document.querySelector('#add-remote-mapping').addEventListener('click', () => {
   try { addRemoteMapping(); } catch (error) { setRemoteHostFeedback(`错误：${error.message || error}`, 'error'); }
 });

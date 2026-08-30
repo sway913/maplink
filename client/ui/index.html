@@ -68,6 +68,17 @@
           <button class="remote-mode-tab" id="remote-desktop-tab" type="button" role="tab" aria-selected="false" aria-controls="remote-desktop-panel" data-remote-mode="desktop">远程控制</button>
         </nav>
         <section class="remote-mode-page active" id="remote-ssh-panel" role="tabpanel" aria-labelledby="remote-ssh-tab" data-remote-mode-panel="ssh">
+          <section class="ssh-readiness" id="ssh-readiness" aria-live="polite">
+            <div>
+              <small>OPENSSH READINESS</small>
+              <strong id="ssh-readiness-title">正在检测本机 OpenSSH…</strong>
+              <p id="ssh-readiness-message">进入 SSH 页面后会自动检查客户端、服务端和 MapLink 专用免密密钥。</p>
+            </div>
+            <div class="ssh-readiness-actions">
+              <button id="refresh-ssh-readiness" type="button">重新检测</button>
+              <button class="primary" id="install-openssh" type="button" hidden>安装并启用 OpenSSH</button>
+            </div>
+          </section>
           <div class="remote-layout">
             <section class="panel remote-setup">
               <div class="section-title"><div><small>LOCAL ENDPOINT</small><h2>开放本机控制入口</h2><p>为当前机器分配一个唯一的公网端口，让另一台 MapLink 设备可以连接本机 SSH。</p></div></div>
@@ -113,7 +124,7 @@
                 <li>两台机器保存配置并启动各自的 frpc。</li>
                 <li>输入对方的公网端口，再检测连接或执行命令。</li>
               </ol>
-              <p class="remote-warning">MapLink 不保存 SSH 密码或私钥。远端命令的权限等同于所连接的系统账号，请优先使用最小权限账号和密钥认证。</p>
+              <p class="remote-warning">MapLink 私钥只保存在创建它的设备。远控建立后只把控制端公钥加入受控端授权文件，服务器和另一台设备都无法取得私钥。</p>
             </aside>
           </div>
           <section class="remote-console" aria-label="SSH 交互式终端">
@@ -169,7 +180,7 @@
             </div>
           </div>
           <div class="about-content">
-            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.6.0</strong></div>
+            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.6.1</strong></div>
             <section class="about-update" aria-labelledby="about-update-title">
               <div>
                 <small>SOFTWARE UPDATE</small>

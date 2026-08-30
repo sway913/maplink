@@ -14,6 +14,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 mod remote_control;
+mod ssh_setup;
 mod updates;
 use remote_control::{
     remote_control_devices, remote_control_frame, remote_control_session, remote_host_status,
@@ -596,7 +597,8 @@ fn execute_remote_command_with(
     request: RemoteCommandRequest,
     timeout: Duration,
 ) -> Result<RemoteCommandResult, String> {
-    let arguments = ssh_arguments(&request)?;
+    let mut arguments = ssh_arguments(&request)?;
+    ssh_setup::add_identity_arguments(&mut arguments);
     let mut command = Command::new(ssh_program);
     command
         .args(arguments)
@@ -724,6 +726,22 @@ async fn run_remote_command(request: RemoteCommandRequest) -> Result<RemoteComma
     .map_err(|error| format!("远程命令任务异常：{error}"))?
 }
 
+#[tauri::command]
+async fn ssh_readiness(ensure_identity: Option<bool>) -> Result<ssh_setup::SSHReadiness, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ssh_setup::readiness(ensure_identity.unwrap_or(true))
+    })
+    .await
+    .map_err(|error| format!("OpenSSH 检测任务异常：{error}"))
+}
+
+#[tauri::command]
+async fn install_openssh() -> Result<ssh_setup::SSHReadiness, String> {
+    tauri::async_runtime::spawn_blocking(ssh_setup::install_or_enable)
+        .await
+        .map_err(|error| format!("OpenSSH 安装任务异常：{error}"))?
+}
+
 fn stream_remote_shell<R: Read + Send + 'static>(
     mut reader: R,
     app: AppHandle,
@@ -769,7 +787,8 @@ fn start_remote_shell(
     state: State<'_, RemoteShellState>,
     request: RemoteShellRequest,
 ) -> Result<u64, String> {
-    let arguments = ssh_shell_arguments(&request)?;
+    let mut arguments = ssh_shell_arguments(&request)?;
+    ssh_setup::add_identity_arguments(&mut arguments);
     let program = std::env::var_os("MAPLINK_SSH_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("ssh"));
@@ -1020,6 +1039,8 @@ pub fn run() {
             client_status,
             client_logs,
             remote_platform,
+            ssh_readiness,
+            install_openssh,
             online_ssh_devices,
             run_remote_command,
             start_remote_shell,
