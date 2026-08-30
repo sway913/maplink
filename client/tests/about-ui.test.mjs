@@ -43,7 +43,7 @@ test('客户端把连接配置、远程连接和关于放在顶部 Tab', async (
 });
 
 test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留本机', async () => {
-  const [html, script, rust, sshSetup, remoteControl, server, xterm, xtermLicense] = await Promise.all([
+  const [html, script, rust, sshSetup, remoteControl, server, xterm, xtermLicense, tauriConfig, eventCapability] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
     read('../src-tauri/src/lib.rs'),
@@ -52,6 +52,8 @@ test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留�
     read('../../server/internal/manager/remote.go'),
     read('../ui/vendor/xterm/xterm.js'),
     read('../ui/vendor/xterm/XTERM-LICENSE'),
+    read('../src-tauri/tauri.conf.json').then(JSON.parse),
+    read('../src-tauri/capabilities/main-events.json').then(JSON.parse),
   ]);
 
   for (const pattern of [
@@ -131,6 +133,12 @@ test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留�
   assert.match(remoteControl, /sshAuthorized/);
   assert.match(server, /SSHPublicKey/);
   assert.match(server, /validSSHPublicKey/);
+  assert.deepEqual(tauriConfig.app.security.capabilities, ['main-events']);
+  assert.deepEqual(eventCapability.windows, ['main']);
+  assert.deepEqual(eventCapability.permissions.sort(), [
+    'core:event:allow-listen',
+    'core:event:allow-unlisten',
+  ]);
   assert.ok(xterm.length > 200_000);
   assert.match(xtermLicense, /MIT License|Permission is hereby granted/);
 });
