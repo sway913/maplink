@@ -89,6 +89,8 @@ test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留�
   assert.match(script, /ssh_readiness/);
   assert.match(script, /install_openssh/);
   assert.match(script, /checkSSHReadiness/);
+  assert.match(script, /可能连带下载约 200 MB 系统组件/);
+  assert.match(script, /sshInstallProgressTimer/);
   assert.match(script, /在线设备列表已刷新/);
   assert.match(script, /new window\.Terminal/);
   assert.match(script, /start_remote_shell/);
@@ -118,6 +120,8 @@ test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留�
   assert.match(sshSetup, /maplink_ed25519/);
   assert.match(sshSetup, /OpenSSH\.Client/);
   assert.match(sshSetup, /OpenSSH\.Server/);
+  assert.match(sshSetup, /Get-WindowsCapability/);
+  assert.match(sshSetup, /State -ne 'Installed'/);
   assert.match(sshSetup, /systemsetup -setremotelogin on/);
   assert.match(sshSetup, /authorized_keys/);
   assert.match(sshSetup, /administrators_authorized_keys/);

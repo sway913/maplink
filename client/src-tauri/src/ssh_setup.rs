@@ -365,7 +365,7 @@ pub(crate) fn readiness(ensure_key: bool) -> SSHReadiness {
 pub(crate) fn install_or_enable() -> Result<SSHReadiness, String> {
     #[cfg(windows)]
     {
-        let script = "Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0 | Out-Null; Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null; Set-Service -Name sshd -StartupType Automatic; Start-Service sshd";
+        let script = "$ErrorActionPreference = 'Stop'; $client = Get-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0; if ($client.State -ne 'Installed') { Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0 | Out-Null }; $server = Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0; if ($server.State -ne 'Installed') { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null }; Set-Service -Name sshd -StartupType Automatic; Start-Service sshd";
         let mut command = Command::new("powershell.exe");
         command.args([
             "-NoProfile",

@@ -70,6 +70,9 @@ let desktopGeneration = 0;
 let desktopInputQueue = [];
 let desktopInputTimer;
 let sshReadinessPromise;
+let lastSSHReadiness;
+let sshInstallProgressTimer;
+let sshInstallStartedAt;
 
 function switchTab(name, focus = false) {
   for (const button of document.querySelectorAll('[data-tab]')) {
@@ -168,8 +171,10 @@ function switchRemoteMode(name, focus = false) {
 }
 
 function paintSSHReadiness(status) {
+  lastSSHReadiness = status;
   const ready = status.clientInstalled && status.serverInstalled && status.serverRunning && status.keyAvailable;
   sshReadiness.className = `ssh-readiness ${ready ? 'ready' : 'warning'}`;
+  sshReadiness.setAttribute('aria-busy', 'false');
   sshReadinessTitle.textContent = ready ? '本机 SSH 已开袋即食' : '本机 SSH 需要配置';
   sshReadinessMessage.textContent = status.message;
   installOpenSSHButton.hidden = ready;
@@ -178,6 +183,23 @@ function paintSSHReadiness(status) {
     : status.clientInstalled && status.serverInstalled
       ? '启动 OpenSSH 服务'
       : '安装并启用 OpenSSH';
+}
+
+function paintSSHInstallProgress() {
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - sshInstallStartedAt) / 1000));
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = String(elapsedSeconds % 60).padStart(2, '0');
+  const elapsed = minutes ? `${minutes} 分 ${seconds} 秒` : `${elapsedSeconds} 秒`;
+  const status = lastSSHReadiness;
+  let phase = '正在配置 OpenSSH，请完成系统管理员授权。';
+  if (status?.platform === 'windows') {
+    phase = status.serverInstalled
+      ? '正在启动 Windows OpenSSH 服务。'
+      : 'Windows 正在下载并安装 OpenSSH Server，可能连带下载约 200 MB 系统组件。';
+  } else if (status?.platform === 'macos') {
+    phase = '正在开启 macOS“远程登录”，请完成系统管理员授权。';
+  }
+  sshReadinessMessage.textContent = `${phase} 已用时 ${elapsed}，请勿重复点击或关闭程序。`;
 }
 
 async function checkSSHReadiness(force = false) {
@@ -703,16 +725,22 @@ document.querySelector('#refresh-ssh-readiness').addEventListener('click', () =>
 installOpenSSHButton.addEventListener('click', async () => {
   installOpenSSHButton.disabled = true;
   sshReadiness.className = 'ssh-readiness warning';
+  sshReadiness.setAttribute('aria-busy', 'true');
   sshReadinessTitle.textContent = '正在配置 OpenSSH…';
-  sshReadinessMessage.textContent = '系统可能显示管理员授权窗口，请完成授权。';
+  sshInstallStartedAt = Date.now();
+  paintSSHInstallProgress();
+  sshInstallProgressTimer = window.setInterval(paintSSHInstallProgress, 1000);
   try {
     paintSSHReadiness(await invoke('install_openssh'));
   } catch (error) {
     sshReadiness.className = 'ssh-readiness error';
+    sshReadiness.setAttribute('aria-busy', 'false');
     sshReadinessTitle.textContent = 'OpenSSH 配置失败';
     sshReadinessMessage.textContent = String(error);
     installOpenSSHButton.hidden = false;
   } finally {
+    window.clearInterval(sshInstallProgressTimer);
+    sshInstallProgressTimer = undefined;
     installOpenSSHButton.disabled = false;
   }
 });
@@ -853,6 +881,7 @@ refreshRuntime();
 refreshTimer = window.setInterval(refreshRuntime, 2500);
 window.addEventListener('beforeunload', () => {
   window.clearInterval(refreshTimer);
+  window.clearInterval(sshInstallProgressTimer);
   window.clearTimeout(terminalInputTimer);
   window.clearTimeout(desktopInputTimer);
 });

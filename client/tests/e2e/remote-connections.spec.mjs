@@ -12,8 +12,8 @@ const profile = {
   proxies: [{ name: 'ssh-e2e', type: 'tcp', localIP: '127.0.0.1', localPort: 22, remotePort: 30022 }],
 };
 
-async function installTauriMock(page, remoteDevices, sshInitiallyReady = true) {
-  await page.addInitScript(({ savedProfile, devices, sshReady }) => {
+async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, sshInstallDelay = 0) {
+  await page.addInitScript(({ savedProfile, devices, sshReady, installDelay }) => {
     const calls = [];
     let openSSHReady = sshReady;
     window.__MAPLINK_E2E_CALLS__ = calls;
@@ -29,6 +29,7 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true) {
               ? { platform: 'windows', clientInstalled: true, serverInstalled: true, serverRunning: true, keyAvailable: true, identityPath: 'maplink_ed25519', message: 'OpenSSH 与 MapLink 专用免密密钥已就绪。' }
               : { platform: 'windows', clientInstalled: false, serverInstalled: false, serverRunning: false, keyAvailable: false, identityPath: '', message: '未完整安装 Windows OpenSSH，点击安装后即可使用。' };
             case 'install_openssh':
+              if (installDelay) await new Promise((resolve) => setTimeout(resolve, installDelay));
               openSSHReady = true;
               return { platform: 'windows', clientInstalled: true, serverInstalled: true, serverRunning: true, keyAvailable: true, identityPath: 'maplink_ed25519', message: 'OpenSSH 与 MapLink 专用免密密钥已就绪。' };
             case 'client_status': return { running: true, installed: true, frpcVersion: '0.71.0', pid: 6000, binaryPath: 'frpc.exe', configPath: 'frpc.toml', logPath: 'frpc.log' };
@@ -46,7 +47,7 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true) {
         },
       },
     };
-  }, { savedProfile: profile, devices: remoteDevices, sshReady: sshInitiallyReady });
+  }, { savedProfile: profile, devices: remoteDevices, sshReady: sshInitiallyReady, installDelay: sshInstallDelay });
 }
 
 test('二级 Tab 可在 SSH 与远程控制之间切换并建立远程会话', async ({ page }) => {
@@ -75,13 +76,16 @@ test('二级 Tab 可在 SSH 与远程控制之间切换并建立远程会话', a
 });
 
 test('进入 SSH 页面自动检测 OpenSSH，缺失时可一键安装并复检', async ({ page }) => {
-  await installTauriMock(page, [], false);
+  await installTauriMock(page, [], false, 1200);
   await page.goto('/');
   await page.getByRole('tab', { name: '远程连接' }).click();
 
   await expect(page.locator('#ssh-readiness-title')).toHaveText('本机 SSH 需要配置');
   await expect(page.locator('#install-openssh')).toBeVisible();
   await page.locator('#install-openssh').click();
+  await expect(page.locator('#ssh-readiness-message')).toContainText('Windows 正在下载并安装 OpenSSH Server');
+  await expect(page.locator('#ssh-readiness-message')).toContainText('已用时');
+  await expect(page.locator('#install-openssh')).toBeDisabled();
   await expect(page.locator('#ssh-readiness-title')).toHaveText('本机 SSH 已开袋即食');
   const commands = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.map((item) => item.command));
   expect(commands).toContain('ssh_readiness');
