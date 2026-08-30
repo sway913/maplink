@@ -59,7 +59,7 @@
           <div>
             <small>REMOTE CONNECTION</small>
             <h2>SSH 与远程桌面统一入口</h2>
-            <p>在下方二级 Tab 切换系统终端或服务器中转远程桌面；两种连接共用同一套 MapLink 设备身份与在线列表。</p>
+            <p>在下方二级 Tab 切换系统终端或服务器中转远程桌面；SSH 手动填写连接信息，远程桌面使用服务器在线设备列表。</p>
           </div>
           <span class="platform-badge" id="remote-platform">正在识别平台</span>
         </section>
@@ -97,11 +97,6 @@
               <small>REMOTE DEVICE</small>
               <h2>连接另一台设备</h2>
               <div class="target-fields">
-                <label>在线设备
-                  <select id="remote-device">
-                    <option value="">正在读取在线设备…</option>
-                  </select>
-                </label>
                 <label>对方系统
                   <select id="remote-os">
                     <option value="windows">Windows OpenSSH Server</option>
@@ -113,12 +108,11 @@
               </div>
               <code id="remote-address">请填写服务器地址和 SSH 用户名</code>
               <div class="remote-actions target-actions">
-                <button id="refresh-remote-devices" type="button">刷新设备</button>
                 <button id="copy-ssh-command" type="button">复制 SSH 命令</button>
                 <button class="primary" id="test-remote-session" type="button">连接终端</button>
               </div>
               <p class="in-app-note">连接后直接在下方终端操作，体验与系统终端一致。</p>
-              <p class="remote-feedback" id="remote-feedback">填写对方的 SSH 用户名和公网端口后连接终端。</p>
+              <p class="remote-feedback" id="remote-feedback">手动填写对方系统、SSH 用户名和公网端口后连接终端。</p>
               <ol id="remote-steps">
                 <li>在对方机器启用 SSH，并在 MapLink 添加本机映射。</li>
                 <li>两台机器保存配置并启动各自的 frpc。</li>
@@ -180,7 +174,7 @@
             </div>
           </div>
           <div class="about-content">
-            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.6.2</strong></div>
+            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.6.3</strong></div>
             <section class="about-update" aria-labelledby="about-update-title">
               <div>
                 <small>SOFTWARE UPDATE</small>

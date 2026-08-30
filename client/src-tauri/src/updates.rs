@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn compares_release_versions_numerically() {
-        assert!(is_newer_version("0.6.2", "0.6.1").unwrap());
+        assert!(is_newer_version("0.6.3", "0.6.2").unwrap());
         assert!(is_newer_version("v0.10.0", "0.9.9").unwrap());
         assert!(!is_newer_version("v0.5.1", "0.5.1").unwrap());
         assert!(!is_newer_version("0.5.0", "0.5.1").unwrap());

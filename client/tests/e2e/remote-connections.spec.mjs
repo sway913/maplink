@@ -36,7 +36,6 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
             case 'client_logs': return 'e2e client ready';
             case 'remote_host_status':
             case 'start_remote_host': return { enabled: true, state: 'ready', message: '本机可被其他设备发现' };
-            case 'online_ssh_devices': return [{ id: 'ssh-e5', clientID: 'e5', name: 'e5主机', platform: 'windows', remotePort: 30023, sshUser: 'tester' }];
             case 'remote_control_devices': return devices;
             case 'start_remote_control': return { id: 'session-e5', targetDeviceID: 'e5', controllerDeviceID: 'local-e2e', state: 'active', error: '', sshAuthorized: true, screenX: 0, screenY: 0, screenWidth: 1920, screenHeight: 1080, frameSequence: 0 };
             case 'remote_control_frame': return new Promise(() => {});
@@ -60,7 +59,12 @@ test('二级 Tab 可在 SSH 与远程控制之间切换并建立远程会话', a
 
   await expect(page.locator('#remote-ssh-panel')).toBeVisible();
   await expect(page.locator('#remote-desktop-panel')).toBeHidden();
-  await expect(page.locator('#remote-device')).toContainText('e5主机');
+  await expect(page.locator('#remote-user')).toBeVisible();
+  await page.locator('#remote-user').fill('manual-user');
+  await page.locator('#remote-target-port').fill('30023');
+  await expect(page.locator('#remote-address')).toContainText('ssh -p 30023 manual-user@127.0.0.1');
+  let commands = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.map((item) => item.command));
+  expect(commands).not.toContain('online_ssh_devices');
 
   await page.getByRole('tab', { name: '远程控制', exact: true }).click();
   await expect(page.locator('#remote-ssh-panel')).toBeHidden();
@@ -70,7 +74,7 @@ test('二级 Tab 可在 SSH 与远程控制之间切换并建立远程会话', a
 
   await page.locator('#connect-remote-desktop').click();
   await expect(page.locator('#desktop-session-status')).toHaveText('已连接 e5主机 · SSH 免密已配置');
-  const commands = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.map((item) => item.command));
+  commands = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.map((item) => item.command));
   expect(commands).toContain('remote_control_devices');
   expect(commands).toContain('start_remote_control');
 });

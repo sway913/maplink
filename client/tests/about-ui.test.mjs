@@ -69,7 +69,6 @@ test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留�
     /id="remote-host-public-port"/,
     /id="remote-host-feedback"/,
     /id="remote-target-port"/,
-    /id="remote-device"/,
     /id="add-remote-mapping"/,
     /id="test-remote-session"/,
     /id="disconnect-remote-shell"/,
@@ -85,13 +84,14 @@ test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留�
   assert.doesNotMatch(html, /id="remote-command"/);
   assert.doesNotMatch(html, /id="remote-command-history"/);
   assert.doesNotMatch(html, /id="remote-output"/);
-  assert.match(script, /online_ssh_devices/);
+  assert.doesNotMatch(html, /id="remote-device"/);
+  assert.doesNotMatch(html, /id="refresh-remote-devices"/);
+  assert.doesNotMatch(script, /online_ssh_devices/);
   assert.match(script, /ssh_readiness/);
   assert.match(script, /install_openssh/);
   assert.match(script, /checkSSHReadiness/);
   assert.match(script, /可能连带下载约 200 MB 系统组件/);
   assert.match(script, /sshInstallProgressTimer/);
-  assert.match(script, /在线设备列表已刷新/);
   assert.match(script, /new window\.Terminal/);
   assert.match(script, /start_remote_shell/);
   assert.match(script, /write_remote_shell/);

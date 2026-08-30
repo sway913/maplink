@@ -9,7 +9,6 @@ const stopButton = document.querySelector('#stop-client');
 const remoteFeedback = document.querySelector('#remote-feedback');
 const remoteHostFeedback = document.querySelector('#remote-host-feedback');
 const remoteAddress = document.querySelector('#remote-address');
-const remoteDevice = document.querySelector('#remote-device');
 const connectRemoteShellButton = document.querySelector('#test-remote-session');
 const disconnectRemoteShellButton = document.querySelector('#disconnect-remote-shell');
 const remoteTerminalStatus = document.querySelector('#remote-terminal-status');
@@ -58,10 +57,6 @@ let pendingShellClosed = new Set();
 let terminalInputBuffer = '';
 let terminalInputTimer;
 let refreshTimer;
-let runtimeRunning = false;
-let lastDeviceRefresh = 0;
-let deviceRefreshPromise;
-let onlineDevices = new Map();
 let desktopDevices = new Map();
 let desktopRefreshPromise;
 let lastDesktopRefresh = 0;
@@ -162,7 +157,6 @@ function switchRemoteMode(name, focus = false) {
     refreshRemoteControlDevices(true);
   } else {
     checkSSHReadiness();
-    refreshOnlineDevices(true);
     window.setTimeout(() => {
       terminalFitAddon.fit();
       terminal.focus();
@@ -292,7 +286,6 @@ function setRemoteHostFeedback(message, type = '') {
 }
 
 function paintRuntime(status) {
-  runtimeRunning = status.running;
   runtimeStatus.classList.toggle('running', status.running);
   runtimeStatus.classList.toggle('missing', !status.installed);
   const frpcLabel = `frpc ${status.frpcVersion || '0.71.0'}`;
@@ -319,61 +312,6 @@ function platformLabel(platform) {
   return platform || '未知系统';
 }
 
-function applySelectedDevice() {
-  const selected = onlineDevices.get(remoteDevice.value);
-  if (!selected) return;
-  document.querySelector('#remote-target-port').value = selected.remotePort;
-  if (['windows', 'macos'].includes(selected.platform)) {
-    document.querySelector('#remote-os').value = selected.platform;
-  }
-  if (selected.sshUser) document.querySelector('#remote-user').value = selected.sshUser;
-  updateRemoteGuide();
-  updateRemoteAddress();
-  setRemoteFeedback(`✓ 已选择 ${selected.name}，SSH 公网端口 ${selected.remotePort}。`, 'success');
-}
-
-async function refreshOnlineDevices(force = false) {
-  if (deviceRefreshPromise) return deviceRefreshPromise;
-  if (!force && (!runtimeRunning || Date.now() - lastDeviceRefresh < 10000)) return;
-  const currentProfile = profile();
-  if (!currentProfile.serverAddr || currentProfile.token.length < 16) {
-    remoteDevice.replaceChildren(option('请先填写服务器地址和 Token'));
-    return;
-  }
-  const selectedID = remoteDevice.value;
-  remoteDevice.disabled = true;
-  if (!selectedID) remoteDevice.replaceChildren(option('正在读取在线设备…'));
-  deviceRefreshPromise = invoke('online_ssh_devices', { profile: currentProfile })
-    .then((devices) => {
-      lastDeviceRefresh = Date.now();
-      const ownDeviceID = currentProfile.deviceID;
-      const available = devices.filter((device) => device.clientID !== ownDeviceID);
-      onlineDevices = new Map(available.map((device) => [device.id, device]));
-      remoteDevice.replaceChildren(option(available.length ? `选择在线设备（${available.length}）` : '暂无在线'));
-      setRemoteFeedback(
-        available.length ? `✓ 已读取 ${available.length} 台可远控在线设备。` : '✓ 在线设备列表已刷新，当前没有其他可远控设备。',
-        'success',
-      );
-      for (const device of available) {
-        remoteDevice.append(option(`${device.name} · ${platformLabel(device.platform)} · :${device.remotePort}`, device.id));
-      }
-      if (onlineDevices.has(selectedID)) remoteDevice.value = selectedID;
-      else if (available.length === 1) {
-        remoteDevice.value = available[0].id;
-        applySelectedDevice();
-      }
-    })
-    .catch((error) => {
-      remoteDevice.replaceChildren(option('在线设备读取失败，点击刷新重试'));
-      if (force) setRemoteFeedback(`设备读取失败：${error}`, 'error');
-    })
-    .finally(() => {
-      remoteDevice.disabled = false;
-      deviceRefreshPromise = undefined;
-    });
-  return deviceRefreshPromise;
-}
-
 async function refreshRuntime() {
   try {
     const [status, logs, hostStatus] = await Promise.all([
@@ -384,7 +322,6 @@ async function refreshRuntime() {
     paintRuntime(status);
     paintRemoteHostStatus(hostStatus);
     document.querySelector('#client-logs').textContent = logs || '暂无日志';
-    if (status.running) refreshOnlineDevices();
     refreshRemoteControlDevices();
   } catch (error) {
     runtimeStatus.textContent = '状态读取失败';
@@ -705,7 +642,6 @@ startButton.addEventListener('click', () => showResult(async () => {
   paintRuntime(status);
   await syncRemoteHost();
   await refreshRuntime();
-  await refreshOnlineDevices(true);
 }, '✓ 原版 frpc 已启动'));
 stopButton.addEventListener('click', () => showResult(async () => {
   const status = await invoke('stop_client');
@@ -714,13 +650,9 @@ stopButton.addEventListener('click', () => showResult(async () => {
 }, '✓ 原版 frpc 已停止'));
 
 document.querySelector('#serverAddr').addEventListener('input', updateRemoteAddress);
-document.querySelector('#managerPort').addEventListener('input', () => { lastDeviceRefresh = 0; });
-document.querySelector('#token').addEventListener('input', () => { lastDeviceRefresh = 0; });
 document.querySelector('#remote-user').addEventListener('input', updateRemoteAddress);
 document.querySelector('#remote-target-port').addEventListener('input', updateRemoteAddress);
 document.querySelector('#remote-os').addEventListener('change', updateRemoteGuide);
-remoteDevice.addEventListener('change', applySelectedDevice);
-document.querySelector('#refresh-remote-devices').addEventListener('click', () => refreshOnlineDevices(true));
 document.querySelector('#refresh-ssh-readiness').addEventListener('click', () => checkSSHReadiness(true));
 installOpenSSHButton.addEventListener('click', async () => {
   installOpenSSHButton.disabled = true;
@@ -860,7 +792,6 @@ invoke('load_profile').then((saved) => {
   saved.proxies.forEach(addProxy);
   syncRemoteHostMapping(saved.proxies);
   updateRemoteAddress();
-  refreshOnlineDevices(true);
   syncRemoteHost().then(() => refreshRemoteControlDevices(true)).catch((error) => {
     desktopHostStatus.textContent = `远程控制主机启动失败：${error}`;
     desktopHostStatus.classList.add('error');
