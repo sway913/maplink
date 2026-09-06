@@ -1,5 +1,6 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
+const emit = window.__TAURI__.event.emit;
 const list = document.querySelector('#proxy-list');
 const template = document.querySelector('#proxy-template');
 const feedback = document.querySelector('#feedback');
@@ -19,6 +20,9 @@ const remoteControlEnabled = document.querySelector('#remote-control-enabled');
 const desktopDevice = document.querySelector('#desktop-device');
 const connectRemoteDesktopButton = document.querySelector('#connect-remote-desktop');
 const disconnectRemoteDesktopButton = document.querySelector('#disconnect-remote-desktop');
+const openRemoteViewerButton = document.querySelector('#open-remote-viewer');
+const desktopQuality = document.querySelector('#desktop-quality');
+const desktopClipboardEnabled = document.querySelector('#desktop-clipboard-enabled');
 const remoteScreen = document.querySelector('#remote-screen');
 const remoteScreenImage = document.querySelector('#remote-screen-image');
 const remoteScreenPlaceholder = document.querySelector('#remote-screen-placeholder');
@@ -65,6 +69,11 @@ let activeDesktopSession = null;
 let desktopGeneration = 0;
 let desktopInputQueue = [];
 let desktopInputTimer;
+let lastRemoteFrame = null;
+let desktopFrameSamples = [];
+let desktopClipboardAfter = 0;
+let desktopClipboardLastText;
+let remoteViewerOpen = false;
 let sshReadinessPromise;
 let lastSSHReadiness;
 let sshInstallProgressTimer;
@@ -121,6 +130,8 @@ function profile() {
     protocol: document.querySelector('#protocol').value,
     sshUser: document.querySelector('#sshUser').value.trim(),
     remoteControlEnabled: remoteControlEnabled.checked,
+    remoteQuality: desktopQuality.value,
+    remoteClipboardEnabled: desktopClipboardEnabled.checked,
     proxies: [...list.querySelectorAll('.proxy-row')].map((row) => Object.fromEntries(
       [...row.querySelectorAll('[data-field]')].map((input) => [input.dataset.field, input.type === 'number' ? Number(input.value) : input.value.trim()]),
     )),
@@ -260,6 +271,33 @@ const terminalEventsReady = Promise.all([
   }),
 ]);
 
+const remoteViewerEventsReady = Promise.all([
+  listen('remote-viewer-ready', () => {
+    remoteViewerOpen = true;
+    publishRemoteViewerState();
+  }),
+  listen('remote-viewer-closed', () => { remoteViewerOpen = false; }),
+  listen('remote-viewer-quality', ({ payload }) => {
+    if (!['720p30', '1080p60', '4k60'].includes(payload?.quality)) return;
+    desktopQuality.value = payload.quality;
+    updateRemoteDesktopSettings().catch((error) => {
+      desktopHostStatus.textContent = `切换画质失败：${error}`;
+      desktopHostStatus.classList.add('error');
+    });
+  }),
+  listen('remote-viewer-clipboard', ({ payload }) => {
+    desktopClipboardEnabled.checked = Boolean(payload?.enabled);
+    desktopClipboardLastText = undefined;
+    updateRemoteDesktopSettings().catch((error) => {
+      desktopHostStatus.textContent = `切换剪贴板同步失败：${error}`;
+      desktopHostStatus.classList.add('error');
+    });
+  }),
+  listen('remote-viewer-input', ({ payload }) => {
+    for (const event of payload?.events || []) queueRemoteInput(event);
+  }),
+]);
+
 function flushTerminalInput() {
   window.clearTimeout(terminalInputTimer);
   terminalInputTimer = undefined;
@@ -349,6 +387,7 @@ function setDesktopSessionState(state, message) {
   desktopSessionIndicator.className = state;
   connectRemoteDesktopButton.disabled = state === 'connecting' || state === 'connected';
   disconnectRemoteDesktopButton.disabled = state !== 'connecting' && state !== 'connected';
+  openRemoteViewerButton.disabled = state !== 'connected';
 }
 
 function paintRemoteHostStatus(status) {
@@ -429,7 +468,12 @@ async function connectRemoteDesktop() {
   setDesktopSessionState('connecting', '正在等待对方设备响应…');
   desktopFrameMeta.textContent = '正在通过 MapLink 服务器建立会话';
   const currentProfile = profile();
-  let session = await invoke('start_remote_control', { profile: currentProfile, targetDeviceId: targetDeviceID });
+  let session = await invoke('start_remote_control', {
+    profile: currentProfile,
+    targetDeviceId: targetDeviceID,
+    quality: desktopQuality.value,
+    clipboardEnabled: desktopClipboardEnabled.checked,
+  });
   activeDesktopSession = session.id;
   const deadline = Date.now() + 30000;
   while (session.state === 'pending' && Date.now() < deadline && generation === desktopGeneration) {
@@ -445,7 +489,13 @@ async function connectRemoteDesktop() {
   remoteScreen.focus();
   remoteScreenPlaceholder.hidden = true;
   remoteScreenImage.hidden = false;
+  desktopFrameSamples = [];
+  desktopClipboardAfter = Number(session.clipboardSequence || 0);
+  desktopClipboardLastText = undefined;
+  publishRemoteViewerState();
   readRemoteFrames(currentProfile, session.id, generation, session.frameSequence);
+  syncLocalClipboard(currentProfile, session.id, generation);
+  readRemoteClipboard(currentProfile, session.id, generation);
 }
 
 async function readRemoteFrames(currentProfile, sessionID, generation, after = 0) {
@@ -458,8 +508,23 @@ async function readRemoteFrames(currentProfile, sessionID, generation, after = 0
       });
       if (!frame) continue;
       after = frame.sequence;
+      lastRemoteFrame = frame;
       remoteScreenImage.src = frame.dataUrl;
-      desktopFrameMeta.textContent = `${frame.width} × ${frame.height} · 帧 ${frame.sequence} · 服务器实时中转`;
+      const now = performance.now();
+      desktopFrameSamples.push({ at: now, bytes: Number(frame.byteLength || 0) });
+      desktopFrameSamples = desktopFrameSamples.filter((sample) => now - sample.at <= 1000);
+      const elapsed = desktopFrameSamples.length > 1
+        ? desktopFrameSamples.at(-1).at - desktopFrameSamples[0].at
+        : 0;
+      const fps = elapsed > 0 ? ((desktopFrameSamples.length - 1) * 1000) / elapsed : 0;
+      const bitrate = elapsed > 0
+        ? (desktopFrameSamples.reduce((total, sample) => total + sample.bytes, 0) * 8) / elapsed / 1000
+        : 0;
+      desktopFrameMeta.textContent = `${frame.width} × ${frame.height} · ${fps.toFixed(1)} FPS · ${bitrate.toFixed(1)} Mbps · 帧 ${frame.sequence}`;
+      if (remoteViewerOpen) {
+        emit('remote-viewer-frame', frame).catch(() => {});
+        emit('remote-viewer-metrics', { text: desktopFrameMeta.textContent }).catch(() => {});
+      }
     } catch (error) {
       if (generation !== desktopGeneration) return;
       await disconnectRemoteDesktop().catch(() => {});
@@ -476,6 +541,10 @@ async function disconnectRemoteDesktop(notifyServer = true) {
   activeDesktopSession = null;
   desktopGeneration += 1;
   desktopInputQueue = [];
+  lastRemoteFrame = null;
+  desktopFrameSamples = [];
+  desktopClipboardAfter = 0;
+  desktopClipboardLastText = undefined;
   window.clearTimeout(desktopInputTimer);
   desktopInputTimer = undefined;
   remoteScreenImage.hidden = true;
@@ -483,6 +552,7 @@ async function disconnectRemoteDesktop(notifyServer = true) {
   remoteScreenPlaceholder.hidden = false;
   desktopFrameMeta.textContent = '服务器加密认证中转 · 不录屏、不落盘';
   setDesktopSessionState('disconnected', '远程桌面未连接');
+  publishRemoteViewerState();
   if (notifyServer && sessionID) {
     await invoke('stop_remote_control', { profile: profile(), sessionId: sessionID });
   }
@@ -500,6 +570,11 @@ function normalizedRemotePoint(event) {
 function queueRemoteInput(event) {
   if (!activeDesktopSession) return;
   if (event.type === 'move' && desktopInputQueue.at(-1)?.type === 'move') desktopInputQueue[desktopInputQueue.length - 1] = event;
+  else if (event.type === 'clipboard') {
+    const previous = desktopInputQueue.findLastIndex((item) => item.type === 'clipboard');
+    if (previous >= 0) desktopInputQueue[previous] = event;
+    else desktopInputQueue.push(event);
+  }
   else desktopInputQueue.push(event);
   if (desktopInputQueue.length > 64) desktopInputQueue.splice(0, desktopInputQueue.length - 64);
   if (desktopInputTimer === undefined) desktopInputTimer = window.setTimeout(flushRemoteInput, 16);
@@ -622,6 +697,79 @@ async function connectRemoteShell() {
     setRemoteShellState('disconnected', 'SSH 连接失败');
     setRemoteFeedback(`连接失败：${error}`, 'error');
     terminal.writeln(`\x1b[31m[MapLink: ${error}]\x1b[0m`);
+  }
+}
+
+function publishRemoteViewerState() {
+  if (!remoteViewerOpen) return;
+  emit('remote-viewer-state', {
+    connected: Boolean(activeDesktopSession),
+    quality: desktopQuality.value,
+    clipboardEnabled: desktopClipboardEnabled.checked,
+    status: desktopSessionStatus.textContent,
+  }).catch(() => {});
+  if (lastRemoteFrame) emit('remote-viewer-frame', lastRemoteFrame).catch(() => {});
+}
+
+async function updateRemoteDesktopSettings() {
+  await invoke('save_profile', { profile: profile() }).catch(() => {});
+  if (!activeDesktopSession) {
+    publishRemoteViewerState();
+    return;
+  }
+  await invoke('update_remote_control_settings', {
+    profile: profile(),
+    sessionId: activeDesktopSession,
+    quality: desktopQuality.value,
+    clipboardEnabled: desktopClipboardEnabled.checked,
+  });
+  publishRemoteViewerState();
+}
+
+async function syncLocalClipboard(currentProfile, sessionID, generation) {
+  while (generation === desktopGeneration && activeDesktopSession === sessionID) {
+    if (desktopClipboardEnabled.checked) {
+      try {
+        const text = await invoke('read_local_clipboard');
+        if (typeof text === 'string' && text !== desktopClipboardLastText) {
+          desktopClipboardLastText = text;
+          if (new TextEncoder().encode(text).length <= 65536) {
+            queueRemoteInput({ type: 'clipboard', text });
+          } else {
+            desktopHostStatus.textContent = '剪贴板文本超过 64 KiB，本次未同步。';
+          }
+        }
+      } catch (error) {
+        desktopHostStatus.textContent = `读取本机剪贴板失败：${error}`;
+      }
+    }
+    await delay(400);
+  }
+}
+
+async function readRemoteClipboard(currentProfile, sessionID, generation) {
+  while (generation === desktopGeneration && activeDesktopSession === sessionID) {
+    if (!desktopClipboardEnabled.checked) {
+      await delay(200);
+      continue;
+    }
+    try {
+      const clipboard = await invoke('remote_control_clipboard', {
+        profile: currentProfile,
+        sessionId: sessionID,
+        after: desktopClipboardAfter,
+      });
+      if (!clipboard) continue;
+      desktopClipboardAfter = clipboard.sequence;
+      if (clipboard.text !== desktopClipboardLastText) {
+        desktopClipboardLastText = clipboard.text;
+        await invoke('write_local_clipboard', { text: clipboard.text });
+      }
+    } catch (error) {
+      if (generation !== desktopGeneration || activeDesktopSession !== sessionID) return;
+      desktopHostStatus.textContent = `同步远程剪贴板失败：${error}`;
+      await delay(800);
+    }
   }
 }
 
@@ -778,6 +926,30 @@ disconnectRemoteDesktopButton.addEventListener('click', () => {
     desktopHostStatus.classList.add('error');
   });
 });
+openRemoteViewerButton.addEventListener('click', async () => {
+  try {
+    await remoteViewerEventsReady;
+    await invoke('open_remote_viewer');
+    remoteViewerOpen = true;
+    publishRemoteViewerState();
+  } catch (error) {
+    desktopHostStatus.textContent = `打开全屏窗口失败：${error}`;
+    desktopHostStatus.classList.add('error');
+  }
+});
+desktopQuality.addEventListener('change', () => {
+  updateRemoteDesktopSettings().catch((error) => {
+    desktopHostStatus.textContent = `切换画质失败：${error}`;
+    desktopHostStatus.classList.add('error');
+  });
+});
+desktopClipboardEnabled.addEventListener('change', () => {
+  desktopClipboardLastText = undefined;
+  updateRemoteDesktopSettings().catch((error) => {
+    desktopHostStatus.textContent = `切换剪贴板同步失败：${error}`;
+    desktopHostStatus.classList.add('error');
+  });
+});
 remoteControlEnabled.addEventListener('change', async () => {
   try {
     await invoke('save_profile', { profile: profile() });
@@ -836,6 +1008,8 @@ invoke('load_profile').then((saved) => {
   }
   if (saved.sshUser) document.querySelector('#sshUser').value = saved.sshUser;
   remoteControlEnabled.checked = Boolean(saved.remoteControlEnabled);
+  if (['720p30', '1080p60', '4k60'].includes(saved.remoteQuality)) desktopQuality.value = saved.remoteQuality;
+  if (saved.remoteClipboardEnabled !== undefined) desktopClipboardEnabled.checked = Boolean(saved.remoteClipboardEnabled);
   saved.proxies.forEach(addProxy);
   syncRemoteHostMapping(saved.proxies);
   updateRemoteAddress();

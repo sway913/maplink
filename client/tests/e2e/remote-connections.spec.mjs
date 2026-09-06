@@ -16,11 +16,22 @@ const profile = {
 async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, sshInstallDelay = 0, firstRemoteFrame = null) {
   await page.addInitScript(({ savedProfile, devices, sshReady, installDelay, remoteFrame }) => {
     const calls = [];
+    const eventListeners = new Map();
     let openSSHReady = sshReady;
     let frameDelivered = false;
     window.__MAPLINK_E2E_CALLS__ = calls;
     window.__TAURI__ = {
-      event: { listen: async () => () => {} },
+      event: {
+        listen: async (name, callback) => {
+          const callbacks = eventListeners.get(name) || [];
+          callbacks.push(callback);
+          eventListeners.set(name, callbacks);
+          return () => eventListeners.set(name, callbacks.filter((item) => item !== callback));
+        },
+        emit: async (name, payload) => {
+          for (const callback of eventListeners.get(name) || []) callback({ payload });
+        },
+      },
       core: {
         invoke: async (command, arguments_) => {
           calls.push({ command, arguments_ });
@@ -53,7 +64,8 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
             case 'remote_control_devices': return devices;
             case 'start_remote_control':
               if (!arguments_.targetDeviceId || 'targetDeviceID' in arguments_) throw new Error('start_remote_control requires targetDeviceId');
-              return { id: 'session-e5', targetDeviceID: arguments_.targetDeviceId, controllerDeviceID: 'local-e2e', state: 'active', error: '', sshAuthorized: true, screenX: 0, screenY: 0, screenWidth: 1920, screenHeight: 1080, frameSequence: 0 };
+              if (!['720p30', '1080p60', '4k60'].includes(arguments_.quality)) throw new Error('quality is required');
+              return { id: 'session-e5', targetDeviceID: arguments_.targetDeviceId, controllerDeviceID: 'local-e2e', state: 'active', error: '', sshAuthorized: true, screenX: 0, screenY: 0, screenWidth: 1920, screenHeight: 1080, frameSequence: 0, quality: arguments_.quality, clipboardEnabled: arguments_.clipboardEnabled, clipboardSequence: 0 };
             case 'remote_control_frame':
               if (remoteFrame && !frameDelivered) {
                 frameDelivered = true;
@@ -61,7 +73,14 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
               }
               return new Promise(() => {});
             case 'stop_remote_control':
+            case 'update_remote_control_settings':
+            case 'open_remote_viewer':
+            case 'set_remote_viewer_fullscreen':
+            case 'close_remote_viewer':
+            case 'write_local_clipboard':
             case 'save_profile': return null;
+            case 'read_local_clipboard': return null;
+            case 'remote_control_clipboard': return new Promise(() => {});
             default: return null;
           }
         },
@@ -125,6 +144,17 @@ test('二级 Tab 可在 SSH 与远程控制之间切换并建立远程会话', a
   const startCall = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.find((item) => item.command === 'start_remote_control'));
   expect(startCall.arguments_.targetDeviceId).toBe('e5');
   expect(startCall.arguments_).not.toHaveProperty('targetDeviceID');
+  expect(startCall.arguments_.quality).toBe('1080p60');
+  expect(startCall.arguments_.clipboardEnabled).toBe(true);
+
+  await page.locator('#desktop-quality').selectOption('4k60');
+  await page.locator('#desktop-clipboard-enabled').uncheck();
+  await page.locator('#open-remote-viewer').click();
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'update_remote_control_settings').length)).toBe(2);
+  const settingsCalls = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'update_remote_control_settings'));
+  expect(settingsCalls.at(-1).arguments_.quality).toBe('4k60');
+  expect(settingsCalls.at(-1).arguments_.clipboardEnabled).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.some((item) => item.command === 'open_remote_viewer'))).toBe(true);
 });
 
 test('远程会话收到的 data 图片帧会显示在桌面区域', async ({ page }) => {
@@ -146,6 +176,55 @@ test('远程会话收到的 data 图片帧会显示在桌面区域', async ({ pa
   await expect(page.locator('#remote-screen-image')).toHaveAttribute('src', /^data:image\/gif;base64,/);
   await expect.poll(() => page.locator('#remote-screen-image').evaluate((image) => image.naturalWidth)).toBe(1);
   await expect(page.locator('#desktop-frame-meta')).toContainText('帧 1');
+});
+
+test('独立全屏窗口显示工具栏、画面并回传画质与输入', async ({ page }) => {
+  await page.addInitScript(() => {
+    const listeners = new Map();
+    const emitted = [];
+    window.__MAPLINK_VIEWER_EVENTS__ = emitted;
+    window.__MAPLINK_VIEWER_DISPATCH__ = (name, payload) => {
+      for (const callback of listeners.get(name) || []) callback({ payload });
+    };
+    window.__TAURI__ = {
+      core: { invoke: async (command, arguments_) => emitted.push({ command, arguments_ }) },
+      event: {
+        listen: async (name, callback) => {
+          const callbacks = listeners.get(name) || [];
+          callbacks.push(callback);
+          listeners.set(name, callbacks);
+          return () => {};
+        },
+        emit: async (name, payload) => emitted.push({ name, payload }),
+      },
+    };
+  });
+  await page.goto('/remote-viewer.html');
+  await expect(page.locator('#viewer-quality option')).toHaveCount(3);
+  await page.evaluate(() => {
+    window.__MAPLINK_VIEWER_DISPATCH__('remote-viewer-state', {
+      connected: true,
+      quality: '1080p60',
+      clipboardEnabled: true,
+      status: '已连接 e5主机',
+    });
+    window.__MAPLINK_VIEWER_DISPATCH__('remote-viewer-frame', {
+      sequence: 1,
+      width: 1,
+      height: 1,
+      dataUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
+    });
+  });
+  await expect(page.locator('#viewer-status')).toHaveText('已连接 e5主机');
+  await expect(page.locator('#viewer-clipboard')).toBeChecked();
+  await expect(page.locator('#viewer-image')).toHaveAttribute('src', /^data:image\/gif;base64,/);
+
+  await page.locator('#viewer-quality').selectOption('4k60');
+  await page.locator('#viewer-clipboard').uncheck();
+  await page.locator('#viewer-screen').click({ position: { x: 1, y: 1 } });
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_VIEWER_EVENTS__.some((item) => item.name === 'remote-viewer-quality' && item.payload.quality === '4k60'))).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_VIEWER_EVENTS__.some((item) => item.name === 'remote-viewer-clipboard' && item.payload.enabled === false))).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_VIEWER_EVENTS__.some((item) => item.name === 'remote-viewer-input'))).toBe(true);
 });
 
 test('进入远程控制只自动刷新一次，手动刷新仍可用', async ({ page }) => {

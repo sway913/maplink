@@ -1,3 +1,4 @@
+use arboard::Clipboard;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 #[cfg(target_os = "macos")]
 use core_graphics::access::ScreenCaptureAccess;
@@ -11,17 +12,20 @@ use std::{
     collections::HashSet,
     sync::{
         atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, TrySendError},
         Arc, Mutex,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::State;
 use xcap::Monitor;
 
 const HOST_RETRY_DELAY: Duration = Duration::from_secs(5);
 const IDLE_POLL_DELAY: Duration = Duration::from_millis(700);
-const FRAME_DELAY: Duration = Duration::from_millis(120);
+const CLIPBOARD_POLL_DELAY: Duration = Duration::from_millis(500);
+const REMOTE_CLIPBOARD_LIMIT: usize = 64 << 10;
+const FRAME_UPLOAD_WORKERS: usize = 4;
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +114,12 @@ pub(crate) struct RemoteSession {
     screen_width: i32,
     screen_height: i32,
     frame_sequence: u64,
+    #[serde(default = "default_remote_quality")]
+    quality: String,
+    #[serde(default)]
+    clipboard_enabled: bool,
+    #[serde(default)]
+    clipboard_sequence: u64,
 }
 
 #[derive(Deserialize)]
@@ -138,6 +148,8 @@ pub(crate) struct RemoteInput {
     code: String,
     #[serde(default)]
     down: bool,
+    #[serde(default)]
+    text: String,
 }
 
 #[derive(Deserialize)]
@@ -153,6 +165,23 @@ struct RemoteInputsResponse {
     events: Vec<SequencedRemoteInput>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteFrameExchange {
+    sequence: u64,
+    state: String,
+    events: Vec<SequencedRemoteInput>,
+    quality: String,
+    clipboard_enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemoteClipboard {
+    sequence: u64,
+    text: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteFrame {
@@ -160,8 +189,59 @@ pub(crate) struct RemoteFrame {
     width: i32,
     height: i32,
     data_url: String,
+    byte_length: usize,
 }
 
+#[derive(Clone, Copy)]
+struct CapturePreset {
+    max_width: u32,
+    max_height: u32,
+    jpeg_quality: u8,
+    frame_interval: Duration,
+}
+
+struct FrameUpload {
+    sequence: u64,
+    width: u32,
+    height: u32,
+    jpeg: Vec<u8>,
+}
+
+enum FrameUploadFeedback {
+    Exchange(RemoteFrameExchange),
+    Closed,
+    Error(String),
+}
+
+fn default_remote_quality() -> String {
+    "720p30".into()
+}
+
+fn capture_preset(quality: &str) -> Result<CapturePreset, String> {
+    match quality {
+        "720p30" => Ok(CapturePreset {
+            max_width: 1280,
+            max_height: 720,
+            jpeg_quality: 72,
+            frame_interval: Duration::from_micros(33_333),
+        }),
+        "1080p60" => Ok(CapturePreset {
+            max_width: 1920,
+            max_height: 1080,
+            jpeg_quality: 82,
+            frame_interval: Duration::from_micros(16_667),
+        }),
+        "4k60" => Ok(CapturePreset {
+            max_width: 3840,
+            max_height: 2160,
+            jpeg_quality: 88,
+            frame_interval: Duration::from_micros(16_667),
+        }),
+        _ => Err("远程画质选项无效".into()),
+    }
+}
+
+#[derive(Clone)]
 struct RelayClient {
     profile: RemoteProfile,
     client: Client,
@@ -527,6 +607,8 @@ fn interruptible_sleep(generation_state: &AtomicU64, generation: u64, duration: 
 struct CaptureEnvironment {
     monitor: Monitor,
     enigo: Enigo,
+    clipboard: Option<Clipboard>,
+    last_clipboard_text: Option<String>,
     pressed_buttons: HashSet<Button>,
     pressed_keys: HashSet<Key>,
     screen_x: i32,
@@ -592,9 +674,13 @@ fn capture_environment() -> Result<CaptureEnvironment, String> {
         .map_err(|error| format!("屏幕录制权限不可用：{error}"))?;
     let enigo = Enigo::new(&input_settings(false))
         .map_err(|error| format!("辅助功能权限尚未生效：{error}"))?;
+    let mut clipboard = Clipboard::new().ok();
+    let last_clipboard_text = clipboard.as_mut().and_then(|value| value.get_text().ok());
     Ok(CaptureEnvironment {
         monitor,
         enigo,
+        clipboard,
+        last_clipboard_text,
         pressed_buttons: HashSet::new(),
         pressed_keys: HashSet::new(),
         screen_x,
@@ -623,10 +709,62 @@ fn serve_remote_session(
         "error": "",
     });
     let _: RemoteSession = relay.json_request(Method::POST, &accept_path, &accept)?;
+    let (feedback_sender, feedback_receiver) = mpsc::channel();
+    let mut upload_senders = Vec::with_capacity(FRAME_UPLOAD_WORKERS);
+    for worker_index in 0..FRAME_UPLOAD_WORKERS {
+        let (upload_sender, upload_receiver) = mpsc::sync_channel(0);
+        let worker_relay = relay.clone();
+        let worker_session_id = session.id.clone();
+        let worker_feedback = feedback_sender.clone();
+        thread::Builder::new()
+            .name(format!("maplink-frame-upload-{worker_index}"))
+            .spawn(move || {
+                frame_uploader_loop(
+                    worker_relay,
+                    worker_session_id,
+                    worker_index == 0,
+                    upload_receiver,
+                    worker_feedback,
+                );
+            })
+            .map_err(|error| format!("启动远程画面上传线程失败：{error}"))?;
+        upload_senders.push(upload_sender);
+    }
+    drop(feedback_sender);
     let mut frame_sequence = 0_u64;
-    let mut input_sequence = 0_u64;
+    let mut applied_input_sequence = 0_u64;
+    let mut next_uploader = 0_usize;
     let mut heartbeat_at = SystemTime::now();
+    let mut clipboard_check_at = Instant::now();
+    let mut quality = if capture_preset(&session.quality).is_ok() {
+        session.quality.clone()
+    } else {
+        default_remote_quality()
+    };
+    let mut clipboard_enabled = session.clipboard_enabled;
     while generation_state.load(Ordering::SeqCst) == generation {
+        let frame_started = Instant::now();
+        for feedback in feedback_receiver.try_iter() {
+            match feedback {
+                FrameUploadFeedback::Exchange(exchange) => {
+                    if exchange.state != "active" {
+                        return Ok(());
+                    }
+                    apply_remote_events(
+                        &mut environment,
+                        exchange.events,
+                        exchange.sequence,
+                        &mut applied_input_sequence,
+                    )?;
+                    if capture_preset(&exchange.quality).is_ok() {
+                        quality = exchange.quality;
+                        clipboard_enabled = exchange.clipboard_enabled;
+                    }
+                }
+                FrameUploadFeedback::Closed => return Ok(()),
+                FrameUploadFeedback::Error(error) => return Err(error),
+            }
+        }
         if heartbeat_at.elapsed().unwrap_or_default() >= Duration::from_secs(10) {
             let heartbeat = serde_json::json!({
                 "deviceID": relay.profile.device_id,
@@ -638,57 +776,181 @@ fn serve_remote_session(
                 relay.json_request(Method::POST, "/api/remote/hosts/heartbeat", &heartbeat)?;
             heartbeat_at = SystemTime::now();
         }
-        let input_path = format!(
-            "/api/remote/sessions/{}/inputs?after={input_sequence}&wait=0",
-            session.id
-        );
-        let input_response: RemoteInputsResponse = relay.empty_json(Method::GET, &input_path)?;
-        if input_response.state != "active" {
-            break;
+        if clipboard_enabled && clipboard_check_at.elapsed() >= CLIPBOARD_POLL_DELAY {
+            publish_target_clipboard(relay, session, &mut environment)?;
+            clipboard_check_at = Instant::now();
         }
-        for item in input_response.events {
-            apply_remote_input(&mut environment, &item.event)?;
-            input_sequence = input_sequence.max(item.sequence);
-        }
-        input_sequence = input_sequence.max(input_response.sequence);
 
-        let (jpeg, width, height) = capture_jpeg(&environment.monitor)?;
+        let preset = capture_preset(&quality)?;
+        let (jpeg, width, height) = capture_jpeg(&environment.monitor, preset)?;
         frame_sequence += 1;
-        let frame_path = format!("/api/remote/sessions/{}/frames", session.id);
-        let response = relay.request(
-            Method::POST,
-            &frame_path,
+        let mut pending = Some(FrameUpload {
+            sequence: frame_sequence,
+            width,
+            height,
             jpeg,
-            vec![
-                ("Content-Type".into(), "image/jpeg".into()),
-                ("X-MapLink-Sequence".into(), frame_sequence.to_string()),
-                ("X-MapLink-Width".into(), width.to_string()),
-                ("X-MapLink-Height".into(), height.to_string()),
-            ],
-        )?;
-        if !response.status().is_success() {
-            if response.status() == StatusCode::CONFLICT
-                || response.status() == StatusCode::NOT_FOUND
-            {
-                break;
+        });
+        for offset in 0..upload_senders.len() {
+            let worker_index = (next_uploader + offset) % upload_senders.len();
+            let frame = pending.take().expect("frame upload remains available");
+            match upload_senders[worker_index].try_send(frame) {
+                Ok(()) => {
+                    next_uploader = (worker_index + 1) % upload_senders.len();
+                    break;
+                }
+                Err(TrySendError::Full(frame) | TrySendError::Disconnected(frame)) => {
+                    pending = Some(frame);
+                }
             }
-            return Err(format!("上传远程画面失败：HTTP {}", response.status()));
         }
-        interruptible_sleep(generation_state, generation, FRAME_DELAY);
+        if let Some(remaining) = preset.frame_interval.checked_sub(frame_started.elapsed()) {
+            if generation_state.load(Ordering::SeqCst) == generation {
+                thread::sleep(remaining);
+            }
+        }
     }
     Ok(())
 }
 
-fn capture_jpeg(monitor: &Monitor) -> Result<(Vec<u8>, u32, u32), String> {
+fn frame_uploader_loop(
+    relay: RelayClient,
+    session_id: String,
+    receives_input: bool,
+    uploads: Receiver<FrameUpload>,
+    feedback: mpsc::Sender<FrameUploadFeedback>,
+) {
+    let mut input_sequence = 0_u64;
+    for frame in uploads {
+        let frame_path = if receives_input {
+            format!("/api/remote/sessions/{session_id}/frames?inputAfter={input_sequence}")
+        } else {
+            format!("/api/remote/sessions/{session_id}/frames")
+        };
+        let response = relay.request(
+            Method::POST,
+            &frame_path,
+            frame.jpeg,
+            vec![
+                ("Content-Type".into(), "image/jpeg".into()),
+                ("X-MapLink-Sequence".into(), frame.sequence.to_string()),
+                ("X-MapLink-Width".into(), frame.width.to_string()),
+                ("X-MapLink-Height".into(), frame.height.to_string()),
+            ],
+        );
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = feedback.send(FrameUploadFeedback::Error(error));
+                return;
+            }
+        };
+        let status = response.status();
+        if status == StatusCode::CONFLICT || status == StatusCode::NOT_FOUND {
+            let _ = feedback.send(FrameUploadFeedback::Closed);
+            return;
+        }
+        if !status.is_success() {
+            let _ = feedback.send(FrameUploadFeedback::Error(format!(
+                "上传远程画面失败：HTTP {status}"
+            )));
+            return;
+        }
+        if !receives_input {
+            continue;
+        }
+        let exchange = if status == StatusCode::NO_CONTENT {
+            let input_path =
+                format!("/api/remote/sessions/{session_id}/inputs?after={input_sequence}&wait=0");
+            match relay.empty_json::<RemoteInputsResponse>(Method::GET, &input_path) {
+                Ok(input) => RemoteFrameExchange {
+                    sequence: input.sequence,
+                    state: input.state,
+                    events: input.events,
+                    quality: String::new(),
+                    clipboard_enabled: false,
+                },
+                Err(error) => {
+                    let _ = feedback.send(FrameUploadFeedback::Error(error));
+                    return;
+                }
+            }
+        } else {
+            match decode_response::<RemoteFrameExchange>(response) {
+                Ok(exchange) => exchange,
+                Err(error) => {
+                    let _ = feedback.send(FrameUploadFeedback::Error(error));
+                    return;
+                }
+            }
+        };
+        input_sequence = input_sequence.max(exchange.sequence);
+        if feedback
+            .send(FrameUploadFeedback::Exchange(exchange))
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
+fn apply_remote_events(
+    environment: &mut CaptureEnvironment,
+    events: Vec<SequencedRemoteInput>,
+    sequence: u64,
+    input_sequence: &mut u64,
+) -> Result<(), String> {
+    for item in events {
+        apply_remote_input(environment, &item.event)?;
+        *input_sequence = (*input_sequence).max(item.sequence);
+    }
+    *input_sequence = (*input_sequence).max(sequence);
+    Ok(())
+}
+
+fn publish_target_clipboard(
+    relay: &RelayClient,
+    session: &RemoteSession,
+    environment: &mut CaptureEnvironment,
+) -> Result<(), String> {
+    let Some(clipboard) = environment.clipboard.as_mut() else {
+        return Ok(());
+    };
+    let Ok(text) = clipboard.get_text() else {
+        return Ok(());
+    };
+    if environment.last_clipboard_text.as_deref() == Some(text.as_str()) {
+        return Ok(());
+    }
+    environment.last_clipboard_text = Some(text.clone());
+    if text.len() > REMOTE_CLIPBOARD_LIMIT {
+        return Ok(());
+    }
+    let _: serde_json::Value = relay.json_request(
+        Method::POST,
+        &format!("/api/remote/sessions/{}/clipboard", session.id),
+        &serde_json::json!({ "text": text }),
+    )?;
+    Ok(())
+}
+
+fn capture_jpeg(monitor: &Monitor, preset: CapturePreset) -> Result<(Vec<u8>, u32, u32), String> {
     let image = monitor
         .capture_image()
         .map_err(|error| format!("采集屏幕失败：{error}"))?;
-    let resized =
-        DynamicImage::ImageRgba8(image).resize(1440, 1000, image::imageops::FilterType::Triangle);
+    let source = DynamicImage::ImageRgba8(image);
+    let resized = if source.width() > preset.max_width || source.height() > preset.max_height {
+        source.resize(
+            preset.max_width,
+            preset.max_height,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        source
+    };
     let width = resized.width();
     let height = resized.height();
     let mut jpeg = Vec::with_capacity((width * height / 3) as usize);
-    JpegEncoder::new_with_quality(&mut jpeg, 72)
+    JpegEncoder::new_with_quality(&mut jpeg, preset.jpeg_quality)
         .encode_image(&resized)
         .map_err(|error| format!("压缩远程画面失败：{error}"))?;
     Ok((jpeg, width, height))
@@ -778,6 +1040,19 @@ fn apply_remote_input(
                 .map_err(|error| format!("发送远程键盘输入失败：{error}"))?;
             track_pressed(&mut environment.pressed_keys, key, input.down);
         }
+        "clipboard" => {
+            if input.text.len() > REMOTE_CLIPBOARD_LIMIT {
+                return Err("远程剪贴板文本过大".into());
+            }
+            let clipboard = environment
+                .clipboard
+                .as_mut()
+                .ok_or_else(|| "本机剪贴板不可用".to_string())?;
+            clipboard
+                .set_text(input.text.clone())
+                .map_err(|error| format!("写入本机剪贴板失败：{error}"))?;
+            environment.last_clipboard_text = Some(input.text.clone());
+        }
         _ => return Err("远程输入类型无效".into()),
     }
     Ok(())
@@ -850,7 +1125,10 @@ pub(crate) async fn remote_control_devices(
 pub(crate) async fn start_remote_control(
     profile: RemoteProfile,
     target_device_id: String,
+    quality: String,
+    clipboard_enabled: bool,
 ) -> Result<RemoteSession, String> {
+    capture_preset(&quality)?;
     tauri::async_runtime::spawn_blocking(move || {
         let relay = RelayClient::new(profile.clone())?;
         let controller_ssh_public_key = crate::ssh_setup::ensure_identity()
@@ -860,11 +1138,36 @@ pub(crate) async fn start_remote_control(
             "targetDeviceID": target_device_id,
             "controllerDeviceID": profile.device_id,
             "controllerSSHPublicKey": controller_ssh_public_key,
+            "quality": quality,
+            "clipboardEnabled": clipboard_enabled,
         });
         relay.json_request(Method::POST, "/api/remote/sessions", &request)
     })
     .await
     .map_err(|error| format!("远程会话任务异常：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn update_remote_control_settings(
+    profile: RemoteProfile,
+    session_id: String,
+    quality: String,
+    clipboard_enabled: bool,
+) -> Result<RemoteSession, String> {
+    capture_preset(&quality)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let relay = RelayClient::new(profile)?;
+        relay.json_request(
+            Method::PATCH,
+            &format!("/api/remote/sessions/{session_id}/settings"),
+            &serde_json::json!({
+                "quality": quality,
+                "clipboardEnabled": clipboard_enabled,
+            }),
+        )
+    })
+    .await
+    .map_err(|error| format!("更新远程会话设置任务异常：{error}"))?
 }
 
 #[tauri::command]
@@ -917,15 +1220,52 @@ pub(crate) async fn remote_control_frame(
         let bytes = response
             .bytes()
             .map_err(|error| format!("读取远程画面失败：{error}"))?;
+        let byte_length = bytes.len();
         Ok(Some(RemoteFrame {
             sequence,
             width,
             height,
             data_url: format!("data:image/jpeg;base64,{}", BASE64.encode(bytes)),
+            byte_length,
         }))
     })
     .await
     .map_err(|error| format!("远程画面任务异常：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn remote_control_clipboard(
+    profile: RemoteProfile,
+    session_id: String,
+    after: u64,
+) -> Result<Option<RemoteClipboard>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let relay = RelayClient::new(profile)?;
+        let path = format!("/api/remote/sessions/{session_id}/clipboard?after={after}");
+        let response = relay.request(Method::GET, &path, Vec::new(), Vec::new())?;
+        if response.status() == StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        decode_response(response).map(Some)
+    })
+    .await
+    .map_err(|error| format!("远程剪贴板任务异常：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) fn read_local_clipboard() -> Option<String> {
+    Clipboard::new().ok()?.get_text().ok()
+}
+
+#[tauri::command]
+pub(crate) fn write_local_clipboard(text: String) -> Result<(), String> {
+    if text.len() > REMOTE_CLIPBOARD_LIMIT {
+        return Err("远程剪贴板文本过大".into());
+    }
+    Clipboard::new()
+        .map_err(|error| format!("打开本机剪贴板失败：{error}"))?
+        .set_text(text)
+        .map_err(|error| format!("写入本机剪贴板失败：{error}"))
 }
 
 #[tauri::command]
@@ -936,6 +1276,12 @@ pub(crate) async fn send_remote_control_input(
 ) -> Result<(), String> {
     if events.is_empty() || events.len() > 64 {
         return Err("远程输入批次数量无效".into());
+    }
+    if events
+        .iter()
+        .any(|event| event.input_type == "clipboard" && event.text.len() > REMOTE_CLIPBOARD_LIMIT)
+    {
+        return Err("远程剪贴板文本过大".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
         let relay = RelayClient::new(profile)?;
@@ -1041,6 +1387,36 @@ mod tests {
         .unwrap();
         assert_eq!(session.target_device_id, "desktop-a");
         assert_eq!(session.controller_device_id, "desktop-b");
+        assert_eq!(session.quality, "720p30");
+        assert!(!session.clipboard_enabled);
+    }
+
+    #[test]
+    fn quality_presets_have_the_requested_resolution_and_frame_targets() {
+        let low = capture_preset("720p30").unwrap();
+        assert_eq!((low.max_width, low.max_height), (1280, 720));
+        assert!(low.frame_interval >= Duration::from_millis(33));
+
+        let full_hd = capture_preset("1080p60").unwrap();
+        assert_eq!((full_hd.max_width, full_hd.max_height), (1920, 1080));
+        assert!(full_hd.frame_interval <= Duration::from_millis(17));
+
+        let ultra_hd = capture_preset("4k60").unwrap();
+        assert_eq!((ultra_hd.max_width, ultra_hd.max_height), (3840, 2160));
+        assert!(ultra_hd.frame_interval <= Duration::from_millis(17));
+        assert!(capture_preset("unlimited").is_err());
+    }
+
+    #[test]
+    fn combined_frame_exchange_accepts_input_and_settings() {
+        let exchange: RemoteFrameExchange = serde_json::from_str(
+            r#"{"sequence":2,"state":"active","events":[{"sequence":2,"event":{"type":"clipboard","text":"hello"}}],"quality":"4k60","clipboardEnabled":true}"#,
+        )
+        .unwrap();
+        assert_eq!(exchange.sequence, 2);
+        assert_eq!(exchange.quality, "4k60");
+        assert!(exchange.clipboard_enabled);
+        assert_eq!(exchange.events[0].event.text, "hello");
     }
 
     #[test]
