@@ -357,7 +357,7 @@ function paintRemoteHostStatus(status) {
   desktopHostStatus.classList.toggle('error', ['error', 'permission-required'].includes(status.state));
 }
 
-async function syncRemoteHost() {
+async function syncRemoteHost(requestPermissions = false) {
   const currentProfile = profile();
   if (!currentProfile.serverAddr || currentProfile.token.length < 16) {
     paintRemoteHostStatus({ state: 'disabled', message: '请先在“连接配置”填写服务器地址和 Token。' });
@@ -366,6 +366,7 @@ async function syncRemoteHost() {
   const status = await invoke('start_remote_host', {
     profile: currentProfile,
     enabled: remoteControlEnabled.checked,
+    requestPermissions,
   });
   paintRemoteHostStatus(status);
 }
@@ -780,7 +781,7 @@ disconnectRemoteDesktopButton.addEventListener('click', () => {
 remoteControlEnabled.addEventListener('change', async () => {
   try {
     await invoke('save_profile', { profile: profile() });
-    await syncRemoteHost();
+    await syncRemoteHost(remoteControlEnabled.checked);
     await refreshRemoteControlDevices();
   } catch (error) {
     desktopHostStatus.textContent = `远程控制主机设置失败：${error}`;

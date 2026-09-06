@@ -1,4 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+#[cfg(target_os = "macos")]
+use core_graphics::access::ScreenCaptureAccess;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use hmac::{Hmac, Mac};
 use image::{codecs::jpeg::JpegEncoder, DynamicImage};
@@ -367,12 +369,16 @@ pub(crate) fn start_remote_host(
     state: State<'_, RemoteHostState>,
     profile: RemoteProfile,
     enabled: bool,
+    request_permissions: bool,
 ) -> Result<RemoteHostStatus, String> {
     validate_remote_profile(&profile)?;
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     if !enabled {
         state.stop();
         return remote_host_status(state);
+    }
+    if request_permissions {
+        request_remote_control_permissions();
     }
     let status_value = RemoteHostStatus {
         enabled: true,
@@ -421,9 +427,11 @@ fn remote_host_loop(
         }
     };
     while generation_state.load(Ordering::SeqCst) == generation {
-        let permission = match capture_environment() {
-            Ok(_) => "ready",
-            Err(_) => "permission-required",
+        let permission_error = capture_environment().err();
+        let permission = if permission_error.is_none() {
+            "ready"
+        } else {
+            "permission-required"
         };
         let heartbeat = serde_json::json!({
             "deviceID": profile.device_id,
@@ -445,14 +453,16 @@ fn remote_host_loop(
             interruptible_sleep(&generation_state, generation, HOST_RETRY_DELAY);
             continue;
         }
-        if permission != "ready" {
+        if let Some(permission_error) = permission_error {
             set_host_status(
                 &status,
                 RemoteHostStatus {
                     enabled: true,
                     state: "permission-required".into(),
                     message: if cfg!(target_os = "macos") {
-                        "请在系统设置中允许 MapLink 的屏幕录制与辅助功能权限".into()
+                        format!(
+                            "{permission_error}。请在系统设置中确认当前 MapLink 已获授权；授权后完全退出并重新打开 MapLink"
+                        )
                     } else {
                         "无法访问桌面，请确认以管理员身份运行".into()
                     },
@@ -533,6 +543,25 @@ fn track_pressed<T: Eq + std::hash::Hash>(pressed: &mut HashSet<T>, value: T, do
     }
 }
 
+fn input_settings(prompt_for_permissions: bool) -> Settings {
+    Settings {
+        open_prompt_to_get_permissions: prompt_for_permissions,
+        ..Settings::default()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_remote_control_permissions() {
+    let screen_capture = ScreenCaptureAccess;
+    if !screen_capture.preflight() {
+        let _ = screen_capture.request();
+    }
+    let _ = Enigo::new(&input_settings(true));
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_remote_control_permissions() {}
+
 impl Drop for CaptureEnvironment {
     fn drop(&mut self) {
         for button in self.pressed_buttons.drain() {
@@ -545,6 +574,10 @@ impl Drop for CaptureEnvironment {
 }
 
 fn capture_environment() -> Result<CaptureEnvironment, String> {
+    #[cfg(target_os = "macos")]
+    if !ScreenCaptureAccess.preflight() {
+        return Err("屏幕录制权限尚未生效".into());
+    }
     let monitors = Monitor::all().map_err(|error| format!("读取显示器失败：{error}"))?;
     let monitor = monitors
         .into_iter()
@@ -557,8 +590,8 @@ fn capture_environment() -> Result<CaptureEnvironment, String> {
     monitor
         .capture_image()
         .map_err(|error| format!("屏幕录制权限不可用：{error}"))?;
-    let enigo =
-        Enigo::new(&Settings::default()).map_err(|error| format!("辅助控制权限不可用：{error}"))?;
+    let enigo = Enigo::new(&input_settings(false))
+        .map_err(|error| format!("辅助功能权限尚未生效：{error}"))?;
     Ok(CaptureEnvironment {
         monitor,
         enigo,
@@ -1008,5 +1041,11 @@ mod tests {
         .unwrap();
         assert_eq!(session.target_device_id, "desktop-a");
         assert_eq!(session.controller_device_id, "desktop-b");
+    }
+
+    #[test]
+    fn background_permission_checks_never_open_the_system_prompt() {
+        assert!(!input_settings(false).open_prompt_to_get_permissions);
+        assert!(input_settings(true).open_prompt_to_get_permissions);
     }
 }
