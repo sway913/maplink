@@ -296,7 +296,7 @@ const remoteViewerEventsReady = Promise.all([
     });
   }),
   listen('remote-viewer-input', ({ payload }) => {
-    for (const event of payload?.events || []) queueRemoteInput(event);
+    for (const event of payload?.events || []) queueRemoteInput(event, 0);
   }),
 ]);
 
@@ -557,7 +557,7 @@ function normalizedRemotePoint(event) {
   };
 }
 
-function queueRemoteInput(event) {
+function queueRemoteInput(event, flushDelay = 16) {
   if (!activeDesktopSession) return;
   if (event.type === 'move' && desktopInputQueue.at(-1)?.type === 'move') desktopInputQueue[desktopInputQueue.length - 1] = event;
   else if (event.type === 'clipboard') {
@@ -567,7 +567,7 @@ function queueRemoteInput(event) {
   }
   else desktopInputQueue.push(event);
   if (desktopInputQueue.length > 64) desktopInputQueue.splice(0, desktopInputQueue.length - 64);
-  if (desktopInputTimer === undefined) desktopInputTimer = window.setTimeout(flushRemoteInput, 16);
+  if (desktopInputTimer === undefined) desktopInputTimer = window.setTimeout(flushRemoteInput, flushDelay);
 }
 
 function flushRemoteInput() {

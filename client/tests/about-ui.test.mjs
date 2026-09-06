@@ -214,7 +214,9 @@ test('远程桌面支持高帧率画质、独立全屏窗口和双向剪贴板',
   assert.match(rust, /JpegEncoder/);
   assert.match(rust, /frame_interval: Duration::from_micros\(16_667\)/);
   assert.doesNotMatch(rust, /FRAME_DELAY/);
-  assert.match(rust, /inputAfter=/);
+  assert.match(rust, /fn remote_input_loop/);
+  assert.match(rust, /\/inputs\?after=/);
+  assert.doesNotMatch(rust, /inputAfter=/);
   assert.match(rust, /Clipboard/);
   assert.match(rust, /move_mouse/);
   assert.match(rust, /danger_accept_invalid_certs/);
@@ -237,6 +239,7 @@ test('远程桌面支持高帧率画质、独立全屏窗口和双向剪贴板',
   assert.match(viewerHtml, /id="viewer-quality"/);
   assert.match(viewerHtml, /id="viewer-clipboard"/);
   assert.match(viewerScript, /remote-viewer-input/);
+  assert.match(script, /queueRemoteInput\(event, 0\)/);
   assert.match(viewerScript, /set_remote_viewer_fullscreen/);
   assert.match(viewerScript, /requestAnimationFrame/);
   const runtimeRefresh = script.slice(script.indexOf('async function refreshRuntime'), script.indexOf('function remoteShellRequest'));
