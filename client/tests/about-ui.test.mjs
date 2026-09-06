@@ -42,6 +42,29 @@ test('客户端把连接配置、远程连接和关于放在顶部 Tab', async (
   assert.match(cargo, new RegExp(`version = "${versionPattern}"`));
 });
 
+test('客户端支持一次性设备配对并保留旧 Token 兼容模式', async () => {
+  const [html, script, rust, remoteControl] = await Promise.all([
+    read('../ui/index.html'),
+    read('../ui/app.js'),
+    read('../src-tauri/src/lib.rs'),
+    read('../src-tauri/src/remote_control.rs'),
+  ]);
+
+  for (const pattern of [/id="pairingCode"/, /id="enroll-device"/, /id="deviceCredential"/, /配对并填充配置/]) {
+    assert.match(html, pattern);
+  }
+  assert.match(script, /invoke\('enroll_device'/);
+  assert.match(script, /deviceCredential/);
+  assert.match(rust, /async fn enroll_device/);
+  assert.match(rust, /device_credential/);
+  assert.match(rust, /maplink-device-enrollment-v1/);
+  assert.match(rust, /Hmac<Sha256>/);
+  assert.doesNotMatch(rust, /code:\s*&pairing_code/);
+  assert.match(remoteControl, /X-MapLink-Device-ID/);
+  assert.match(remoteControl, /profile\.device_credential\.is_empty\(\)/);
+  assert.match(remoteControl, /&self\.profile\.token/);
+});
+
 test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留本机', async () => {
   const [html, script, rust, sshSetup, remoteControl, server, xterm, xtermLicense, tauriConfig, eventCapability] = await Promise.all([
     read('../ui/index.html'),

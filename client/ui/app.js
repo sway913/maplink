@@ -6,6 +6,8 @@ const feedback = document.querySelector('#feedback');
 const runtimeStatus = document.querySelector('#runtime-status');
 const startButton = document.querySelector('#start-client');
 const stopButton = document.querySelector('#stop-client');
+const enrollDeviceButton = document.querySelector('#enroll-device');
+const pairingFeedback = document.querySelector('#pairing-feedback');
 const remoteFeedback = document.querySelector('#remote-feedback');
 const remoteHostFeedback = document.querySelector('#remote-host-feedback');
 const remoteAddress = document.querySelector('#remote-address');
@@ -116,6 +118,7 @@ function profile() {
     serverPort: Number(document.querySelector('#serverPort').value),
     managerPort: Number(document.querySelector('#managerPort').value),
     token: document.querySelector('#token').value,
+    deviceCredential: document.querySelector('#deviceCredential').value,
     protocol: document.querySelector('#protocol').value,
     sshUser: document.querySelector('#sshUser').value.trim(),
     remoteControlEnabled: remoteControlEnabled.checked,
@@ -625,7 +628,52 @@ async function connectRemoteShell() {
   }
 }
 
+async function enrollDevice() {
+  const serverAddr = document.querySelector('#serverAddr').value.trim();
+  const managerPort = Number(document.querySelector('#managerPort').value);
+  const deviceID = document.querySelector('#deviceID').value.trim();
+  const pairingCode = document.querySelector('#pairingCode').value.trim();
+  enrollDeviceButton.disabled = true;
+  pairingFeedback.className = '';
+  pairingFeedback.textContent = '正在验证一次性配对码并获取设备配置…';
+  try {
+    const result = await invoke('enroll_device', { serverAddr, managerPort, deviceID, pairingCode });
+    document.querySelector('#serverAddr').value = result.serverAddr;
+    document.querySelector('#managerPort').value = result.managerPort;
+    document.querySelector('#deviceID').value = result.deviceID;
+    document.querySelector('#token').value = result.token;
+    document.querySelector('#deviceCredential').value = result.deviceCredential;
+    document.querySelector('#protocol').value = result.protocol || 'tcp';
+    const serverPort = document.querySelector('#serverPort');
+    const controlPorts = Array.isArray(result.controlPorts) && result.controlPorts.length
+      ? result.controlPorts
+      : [result.serverPort];
+    serverPort.replaceChildren(...controlPorts.map((port) => option(String(port), String(port))));
+    serverPort.value = String(result.serverPort);
+    document.querySelector('#pairingCode').value = '';
+    await invoke('save_profile', { profile: profile() });
+    pairingFeedback.textContent = '✓ 设备配对成功，已保存独立控制凭据和连接配置。';
+    feedback.textContent = '✓ 配置已保存，可直接启动 frpc';
+    await syncRemoteHost();
+  } catch (error) {
+    pairingFeedback.className = 'error';
+    pairingFeedback.textContent = `配对失败：${error}`;
+  } finally {
+    enrollDeviceButton.disabled = false;
+  }
+}
+
 document.querySelector('#add-proxy').addEventListener('click', () => addProxy());
+enrollDeviceButton.addEventListener('click', enrollDevice);
+for (const fieldID of ['deviceID', 'serverAddr', 'managerPort']) {
+  document.querySelector(`#${fieldID}`).addEventListener('input', () => {
+    const credential = document.querySelector('#deviceCredential');
+    if (!credential.value) return;
+    credential.value = '';
+    pairingFeedback.className = 'error';
+    pairingFeedback.textContent = '设备身份信息已改变，请重新使用配对码获取独立凭据。';
+  });
+}
 document.querySelector('#profile-form').addEventListener('submit', (event) => {
   event.preventDefault(); showResult(async () => {
     await invoke('save_profile', { profile: profile() });
@@ -786,7 +834,9 @@ invoke('load_profile').then((saved) => {
     updateRemoteAddress();
     return;
   }
-  for (const key of ['deviceID', 'serverAddr', 'serverPort', 'managerPort', 'token', 'protocol']) document.querySelector(`#${key}`).value = saved[key];
+  for (const key of ['deviceID', 'serverAddr', 'serverPort', 'managerPort', 'token', 'protocol', 'deviceCredential']) {
+    if (saved[key] !== undefined) document.querySelector(`#${key}`).value = saved[key];
+  }
   if (saved.sshUser) document.querySelector('#sshUser').value = saved.sshUser;
   remoteControlEnabled.checked = Boolean(saved.remoteControlEnabled);
   saved.proxies.forEach(addProxy);

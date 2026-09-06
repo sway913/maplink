@@ -29,6 +29,8 @@ pub(crate) struct RemoteProfile {
     server_addr: String,
     manager_port: u16,
     token: String,
+    #[serde(default)]
+    device_credential: String,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -188,14 +190,13 @@ impl RelayClient {
             .as_secs()
             .to_string();
         let nonce = request_nonce();
-        let signature = remote_signature(
-            &self.profile.token,
-            method.as_str(),
-            path,
-            &timestamp,
-            &nonce,
-            &body,
-        )?;
+        let credential = if self.profile.device_credential.is_empty() {
+            &self.profile.token
+        } else {
+            &self.profile.device_credential
+        };
+        let signature =
+            remote_signature(credential, method.as_str(), path, &timestamp, &nonce, &body)?;
         let url = format!(
             "https://{}:{}{}",
             manager_host(&self.profile.server_addr),
@@ -212,6 +213,9 @@ impl RelayClient {
             .header("X-MapLink-Signature", signature)
             .header(reqwest::header::CACHE_CONTROL, "no-store")
             .body(body);
+        if !self.profile.device_credential.is_empty() {
+            request = request.header("X-MapLink-Device-ID", &self.profile.device_id);
+        }
         for (name, value) in headers {
             request = request.header(name, value);
         }

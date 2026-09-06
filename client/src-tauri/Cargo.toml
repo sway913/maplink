@@ -1,6 +1,6 @@
 [package]
 name = "maplink-client"
-version = "0.6.4"
+version = "0.7.0"
 edition = "2021"
 
 [lib]
@@ -11,6 +11,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+aes-gcm = "0.10"
 base64 = "0.22"
 enigo = { version = "0.6.1", default-features = false }
 hmac = "0.12"
