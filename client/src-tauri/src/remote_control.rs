@@ -13,7 +13,7 @@ use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, TrySendError},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -250,12 +250,22 @@ struct RelayClient {
 impl RelayClient {
     fn new(profile: RemoteProfile) -> Result<Self, String> {
         validate_remote_profile(&profile)?;
-        let client = Client::builder()
-            .danger_accept_invalid_certs(true)
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(Duration::from_secs(24))
-            .build()
-            .map_err(|error| format!("初始化远程控制连接失败：{error}"))?;
+        static SHARED_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+        let client = SHARED_CLIENT
+            .get_or_init(|| {
+                Client::builder()
+                    .danger_accept_invalid_certs(true)
+                    .no_proxy()
+                    .connect_timeout(Duration::from_secs(8))
+                    .timeout(Duration::from_secs(24))
+                    .pool_idle_timeout(Duration::from_secs(90))
+                    .pool_max_idle_per_host(16)
+                    .tcp_keepalive(Duration::from_secs(30))
+                    .tcp_nodelay(true)
+                    .build()
+                    .map_err(|error| format!("初始化远程控制连接失败：{error}"))
+            })
+            .clone()?;
         Ok(Self { profile, client })
     }
 

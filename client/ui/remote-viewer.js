@@ -11,6 +11,23 @@ const clipboard = document.querySelector('#viewer-clipboard');
 let connected = false;
 let inputQueue = [];
 let inputTimer;
+let pendingFrame;
+let frameAnimation;
+
+function scheduleFrame(frame) {
+  pendingFrame = frame;
+  if (frameAnimation !== undefined) return;
+  frameAnimation = window.requestAnimationFrame(() => {
+    frameAnimation = undefined;
+    const latest = pendingFrame;
+    pendingFrame = undefined;
+    if (!latest || !connected) return;
+    image.src = latest.dataUrl;
+    image.hidden = false;
+    placeholder.hidden = true;
+    if (pendingFrame) scheduleFrame(pendingFrame);
+  });
+}
 
 function normalizedPoint(event) {
   const bounds = image.getBoundingClientRect();
@@ -48,6 +65,9 @@ Promise.all([
     quality.value = payload.quality || '1080p60';
     clipboard.checked = Boolean(payload.clipboardEnabled);
     if (!connected) {
+      pendingFrame = undefined;
+      if (frameAnimation !== undefined) window.cancelAnimationFrame(frameAnimation);
+      frameAnimation = undefined;
       image.hidden = true;
       image.removeAttribute('src');
       placeholder.hidden = false;
@@ -55,9 +75,7 @@ Promise.all([
     }
   }),
   listen('remote-viewer-frame', ({ payload }) => {
-    image.src = payload.dataUrl;
-    image.hidden = false;
-    placeholder.hidden = true;
+    scheduleFrame(payload);
   }),
   listen('remote-viewer-metrics', ({ payload }) => {
     metrics.textContent = payload.text || '服务器实时中转';
@@ -108,5 +126,6 @@ for (const eventName of ['keydown', 'keyup']) {
 window.addEventListener('beforeunload', () => {
   emit('remote-viewer-closed').catch(() => {});
   window.clearTimeout(inputTimer);
+  if (frameAnimation !== undefined) window.cancelAnimationFrame(frameAnimation);
   inputQueue = [];
 });
