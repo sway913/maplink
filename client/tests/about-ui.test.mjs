@@ -196,6 +196,9 @@ test('v0.6.1 通过二级 Tab 提供可靠的服务器中转远程桌面列表',
     'stop_remote_control',
   ]) assert.match(script, new RegExp(command));
   assert.match(rust, /capture_image/);
+  assert.match(rust, /ScreenCaptureAccess/);
+  assert.match(rust, /open_prompt_to_get_permissions:\s*prompt_for_permissions/);
+  assert.match(rust, /input_settings\(false\)/);
   assert.match(rust, /JpegEncoder/);
   assert.match(rust, /move_mouse/);
   assert.match(rust, /danger_accept_invalid_certs/);
@@ -206,6 +209,7 @@ test('v0.6.1 通过二级 Tab 提供可靠的服务器中转远程桌面列表',
   assert.match(script, /设备读取失败/);
   assert.match(script, /需要系统授权/);
   assert.match(script, /targetDeviceId: targetDeviceID/);
+  assert.match(script, /requestPermissions/);
   const runtimeRefresh = script.slice(script.indexOf('async function refreshRuntime'), script.indexOf('function remoteShellRequest'));
   assert.doesNotMatch(runtimeRefresh, /refreshRemoteControlDevices/);
   assert.doesNotMatch(script, /device\.permission === 'ready'\);/);

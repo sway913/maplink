@@ -122,6 +122,8 @@ test('进入远程控制只自动刷新一次，手动刷新仍可用', async ({
   ]);
   await page.goto('/');
   await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'start_remote_host').length)).toBe(1);
+  const startupHostCall = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.find((item) => item.command === 'start_remote_host'));
+  expect(startupHostCall.arguments_.requestPermissions).toBe(false);
   expect(await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'remote_control_devices').length)).toBe(0);
 
   await page.getByRole('tab', { name: '远程连接' }).click();
@@ -134,6 +136,24 @@ test('进入远程控制只自动刷新一次，手动刷新仍可用', async ({
 
   await page.locator('#refresh-desktop-devices').click();
   await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'remote_control_devices').length)).toBe(2);
+});
+
+test('macOS 权限只在用户重新开启远控时主动请求一次', async ({ page }) => {
+  await installTauriMock(page, []);
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'start_remote_host').length)).toBe(1);
+  await page.getByRole('tab', { name: '远程连接' }).click();
+  await page.getByRole('tab', { name: '远程控制', exact: true }).click();
+
+  await page.locator('#remote-control-enabled').uncheck();
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'start_remote_host').length)).toBe(2);
+  await page.locator('#remote-control-enabled').check();
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'start_remote_host').length)).toBe(3);
+
+  const permissionFlags = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__
+    .filter((item) => item.command === 'start_remote_host')
+    .map((item) => item.arguments_.requestPermissions));
+  expect(permissionFlags).toEqual([false, false, true]);
 });
 
 test('进入 SSH 页面自动检测 OpenSSH，缺失时可一键安装并复检', async ({ page }) => {
