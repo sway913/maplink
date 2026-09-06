@@ -61,7 +61,6 @@ let terminalInputTimer;
 let refreshTimer;
 let desktopDevices = new Map();
 let desktopRefreshPromise;
-let lastDesktopRefresh = 0;
 let activeDesktopSession = null;
 let desktopGeneration = 0;
 let desktopInputQueue = [];
@@ -157,7 +156,7 @@ function switchRemoteMode(name, focus = false) {
     panel.classList.toggle('active', active);
   }
   if (name === 'desktop') {
-    refreshRemoteControlDevices(true);
+    refreshRemoteControlDevices();
   } else {
     checkSSHReadiness();
     window.setTimeout(() => {
@@ -325,7 +324,6 @@ async function refreshRuntime() {
     paintRuntime(status);
     paintRemoteHostStatus(hostStatus);
     document.querySelector('#client-logs').textContent = logs || '暂无日志';
-    refreshRemoteControlDevices();
   } catch (error) {
     runtimeStatus.textContent = '状态读取失败';
     runtimeStatus.classList.add('missing');
@@ -372,9 +370,8 @@ async function syncRemoteHost() {
   paintRemoteHostStatus(status);
 }
 
-async function refreshRemoteControlDevices(force = false) {
+async function refreshRemoteControlDevices() {
   if (desktopRefreshPromise) return desktopRefreshPromise;
-  if (!force && Date.now() - lastDesktopRefresh < 5000) return;
   const currentProfile = profile();
   if (!currentProfile.serverAddr || currentProfile.token.length < 16) {
     desktopDevice.replaceChildren(option('请先填写服务器地址和 Token'));
@@ -382,7 +379,6 @@ async function refreshRemoteControlDevices(force = false) {
     desktopDeviceFeedback.className = 'desktop-device-feedback';
     return;
   }
-  lastDesktopRefresh = Date.now();
   const selectedID = desktopDevice.value;
   desktopDevice.disabled = true;
   if (!selectedID) desktopDevice.replaceChildren(option('正在读取远程设备…'));
@@ -432,7 +428,7 @@ async function connectRemoteDesktop() {
   setDesktopSessionState('connecting', '正在等待对方设备响应…');
   desktopFrameMeta.textContent = '正在通过 MapLink 服务器建立会话';
   const currentProfile = profile();
-  let session = await invoke('start_remote_control', { profile: currentProfile, targetDeviceID });
+  let session = await invoke('start_remote_control', { profile: currentProfile, targetDeviceId: targetDeviceID });
   activeDesktopSession = session.id;
   const deadline = Date.now() + 30000;
   while (session.state === 'pending' && Date.now() < deadline && generation === desktopGeneration) {
@@ -637,7 +633,7 @@ async function enrollDevice() {
   pairingFeedback.className = '';
   pairingFeedback.textContent = '正在验证一次性配对码并获取设备配置…';
   try {
-    const result = await invoke('enroll_device', { serverAddr, managerPort, deviceID, pairingCode });
+    const result = await invoke('enroll_device', { serverAddr, managerPort, deviceId: deviceID, pairingCode });
     document.querySelector('#serverAddr').value = result.serverAddr;
     document.querySelector('#managerPort').value = result.managerPort;
     document.querySelector('#deviceID').value = result.deviceID;
@@ -742,7 +738,7 @@ disconnectRemoteShellButton.addEventListener('click', () => {
   disconnectRemoteShell().catch((error) => setRemoteFeedback(`断开失败：${error}`, 'error'));
 });
 
-document.querySelector('#refresh-desktop-devices').addEventListener('click', () => refreshRemoteControlDevices(true));
+document.querySelector('#refresh-desktop-devices').addEventListener('click', () => refreshRemoteControlDevices());
 checkUpdateButton.addEventListener('click', async () => {
   checkUpdateButton.disabled = true;
   updateStatus.className = '';
@@ -785,7 +781,7 @@ remoteControlEnabled.addEventListener('change', async () => {
   try {
     await invoke('save_profile', { profile: profile() });
     await syncRemoteHost();
-    await refreshRemoteControlDevices(true);
+    await refreshRemoteControlDevices();
   } catch (error) {
     desktopHostStatus.textContent = `远程控制主机设置失败：${error}`;
     desktopHostStatus.classList.add('error');
@@ -842,7 +838,7 @@ invoke('load_profile').then((saved) => {
   saved.proxies.forEach(addProxy);
   syncRemoteHostMapping(saved.proxies);
   updateRemoteAddress();
-  syncRemoteHost().then(() => refreshRemoteControlDevices(true)).catch((error) => {
+  syncRemoteHost().catch((error) => {
     desktopHostStatus.textContent = `远程控制主机启动失败：${error}`;
     desktopHostStatus.classList.add('error');
   });

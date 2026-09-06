@@ -205,7 +205,9 @@ test('v0.6.1 通过二级 Tab 提供可靠的服务器中转远程桌面列表',
   assert.match(script, /远程设备列表已刷新，当前没有其他可远控设备/);
   assert.match(script, /设备读取失败/);
   assert.match(script, /需要系统授权/);
-  assert.match(script, /refreshRemoteControlDevices\(\)/);
+  assert.match(script, /targetDeviceId: targetDeviceID/);
+  const runtimeRefresh = script.slice(script.indexOf('async function refreshRuntime'), script.indexOf('function remoteShellRequest'));
+  assert.doesNotMatch(runtimeRefresh, /refreshRemoteControlDevices/);
   assert.doesNotMatch(script, /device\.permission === 'ready'\);/);
   assert.match(server, /remoteFrameLimit/);
   assert.match(server, /remoteSignature/);
