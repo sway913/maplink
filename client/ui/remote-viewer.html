@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MapLink 远程桌面</title>
+  <link rel="stylesheet" href="remote-viewer.css" />
+</head>
+<body>
+  <header class="viewer-toolbar">
+    <div class="viewer-brand">
+      <strong>MapLink 远程桌面</strong>
+      <span id="viewer-status">正在连接主窗口…</span>
+    </div>
+    <label>画质
+      <select id="viewer-quality">
+        <option value="720p30">720P · 30 FPS</option>
+        <option value="1080p60">1080P · 60 FPS</option>
+        <option value="4k60">4K · 60 FPS</option>
+      </select>
+    </label>
+    <label class="viewer-check"><input id="viewer-clipboard" type="checkbox" />双向剪贴板</label>
+    <span class="viewer-metrics" id="viewer-metrics">等待首帧</span>
+    <button id="viewer-exit-fullscreen" type="button">退出全屏</button>
+    <button id="viewer-close" type="button">关闭窗口</button>
+  </header>
+  <main id="viewer-screen" tabindex="0" aria-label="远程桌面全屏画面">
+    <img id="viewer-image" alt="远程桌面实时画面" draggable="false" hidden />
+    <div id="viewer-placeholder">等待远程画面…</div>
+  </main>
+  <script src="remote-viewer.js"></script>
+</body>
+</html>

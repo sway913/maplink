@@ -158,8 +158,9 @@ test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留�
   assert.match(server, /SSHPublicKey/);
   assert.match(server, /validSSHPublicKey/);
   assert.deepEqual(tauriConfig.app.security.capabilities, ['main-events']);
-  assert.deepEqual(eventCapability.windows, ['main']);
+  assert.deepEqual(eventCapability.windows, ['main', 'remote-viewer']);
   assert.deepEqual(eventCapability.permissions.sort(), [
+    'core:event:allow-emit',
     'core:event:allow-listen',
     'core:event:allow-unlisten',
   ]);
@@ -167,10 +168,12 @@ test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留�
   assert.match(xtermLicense, /MIT License|Permission is hereby granted/);
 });
 
-test('v0.6.1 通过二级 Tab 提供可靠的服务器中转远程桌面列表', async () => {
-  const [html, script, rust, server, buildScript] = await Promise.all([
+test('远程桌面支持高帧率画质、独立全屏窗口和双向剪贴板', async () => {
+  const [html, script, viewerHtml, viewerScript, rust, server, buildScript] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
+    read('../ui/remote-viewer.html'),
+    read('../ui/remote-viewer.js'),
     read('../src-tauri/src/remote_control.rs'),
     read('../../server/internal/manager/remote.go'),
     read('../src-tauri/build.rs'),
@@ -185,6 +188,12 @@ test('v0.6.1 通过二级 Tab 提供可靠的服务器中转远程桌面列表',
     /id="connect-remote-desktop"/,
     /id="disconnect-remote-desktop"/,
     /id="remote-screen"/,
+    /id="desktop-quality"/,
+    /id="desktop-clipboard-enabled"/,
+    /id="open-remote-viewer"/,
+    /720P · 30 FPS/,
+    /1080P · 60 FPS/,
+    /4K · 60 FPS/,
     /SERVER RELAY/,
   ]) assert.match(html, pattern);
   assert.match(script, /function switchRemoteMode/);
@@ -193,7 +202,9 @@ test('v0.6.1 通过二级 Tab 提供可靠的服务器中转远程桌面列表',
     'remote_control_devices',
     'start_remote_control',
     'remote_control_frame',
+    'remote_control_clipboard',
     'send_remote_control_input',
+    'update_remote_control_settings',
     'stop_remote_control',
   ]) assert.match(script, new RegExp(command));
   assert.match(rust, /capture_image/);
@@ -201,6 +212,10 @@ test('v0.6.1 通过二级 Tab 提供可靠的服务器中转远程桌面列表',
   assert.match(rust, /open_prompt_to_get_permissions:\s*prompt_for_permissions/);
   assert.match(rust, /input_settings\(false\)/);
   assert.match(rust, /JpegEncoder/);
+  assert.match(rust, /frame_interval: Duration::from_micros\(16_667\)/);
+  assert.doesNotMatch(rust, /FRAME_DELAY/);
+  assert.match(rust, /inputAfter=/);
+  assert.match(rust, /Clipboard/);
   assert.match(rust, /move_mouse/);
   assert.match(rust, /danger_accept_invalid_certs/);
   assert.match(rust, /ACCEPT_ENCODING, "identity"/);
@@ -210,7 +225,14 @@ test('v0.6.1 通过二级 Tab 提供可靠的服务器中转远程桌面列表',
   assert.match(script, /设备读取失败/);
   assert.match(script, /需要系统授权/);
   assert.match(script, /targetDeviceId: targetDeviceID/);
+  assert.match(script, /byteLength/);
+  assert.match(script, /remote-viewer-frame/);
+  assert.match(script, /remote_control_clipboard/);
   assert.match(script, /requestPermissions/);
+  assert.match(viewerHtml, /id="viewer-quality"/);
+  assert.match(viewerHtml, /id="viewer-clipboard"/);
+  assert.match(viewerScript, /remote-viewer-input/);
+  assert.match(viewerScript, /set_remote_viewer_fullscreen/);
   const runtimeRefresh = script.slice(script.indexOf('async function refreshRuntime'), script.indexOf('function remoteShellRequest'));
   assert.doesNotMatch(runtimeRefresh, /refreshRemoteControlDevices/);
   assert.doesNotMatch(script, /device\.permission === 'ready'\);/);

@@ -150,9 +150,18 @@
               <label>在线远程设备
                 <select id="desktop-device"><option value="">正在读取在线设备…</option></select>
               </label>
+              <label>画质与帧率
+                <select id="desktop-quality">
+                  <option value="720p30">720P · 30 FPS</option>
+                  <option value="1080p60" selected>1080P · 60 FPS</option>
+                  <option value="4k60">4K · 60 FPS</option>
+                </select>
+              </label>
+              <label class="desktop-clipboard"><input id="desktop-clipboard-enabled" type="checkbox" checked />双向剪贴板</label>
               <button id="refresh-desktop-devices" type="button">刷新设备</button>
               <button class="primary" id="connect-remote-desktop" type="button">远程连接</button>
               <button id="disconnect-remote-desktop" type="button" disabled>断开</button>
+              <button id="open-remote-viewer" type="button" disabled>全屏窗口</button>
               <p id="desktop-device-feedback" class="desktop-device-feedback">正在读取远程设备列表…</p>
             </div>
             <div class="remote-screen" id="remote-screen" tabindex="0" aria-label="远程桌面画面">
@@ -181,7 +190,7 @@
             </div>
           </div>
           <div class="about-content">
-            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.7.3</strong></div>
+            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.8.0</strong></div>
             <section class="about-update" aria-labelledby="about-update-title">
               <div>
                 <small>SOFTWARE UPDATE</small>

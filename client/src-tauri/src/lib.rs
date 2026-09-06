@@ -16,14 +16,15 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder};
 
 mod remote_control;
 mod ssh_setup;
 mod updates;
 use remote_control::{
-    remote_control_devices, remote_control_frame, remote_control_session, remote_host_status,
-    send_remote_control_input, start_remote_control, start_remote_host, stop_remote_control,
+    read_local_clipboard, remote_control_clipboard, remote_control_devices, remote_control_frame,
+    remote_control_session, remote_host_status, send_remote_control_input, start_remote_control,
+    start_remote_host, stop_remote_control, update_remote_control_settings, write_local_clipboard,
     RemoteHostState,
 };
 use updates::{check_for_update, download_and_install_update};
@@ -59,7 +60,19 @@ struct Profile {
     ssh_user: String,
     #[serde(default)]
     remote_control_enabled: bool,
+    #[serde(default = "default_remote_quality")]
+    remote_quality: String,
+    #[serde(default = "default_true")]
+    remote_clipboard_enabled: bool,
     proxies: Vec<Proxy>,
+}
+
+fn default_remote_quality() -> String {
+    "1080p60".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -607,6 +620,12 @@ fn validate(profile: &Profile) -> Result<(), String> {
     }
     if !matches!(profile.protocol.as_str(), "tcp" | "kcp" | "quic") {
         return Err("不支持的传输协议".into());
+    }
+    if !matches!(
+        profile.remote_quality.as_str(),
+        "720p30" | "1080p60" | "4k60"
+    ) {
+        return Err("远程画质选项无效".into());
     }
     if !profile.ssh_user.is_empty()
         && (profile.ssh_user.len() > 64
@@ -1206,6 +1225,48 @@ fn client_logs(app: AppHandle, lines: Option<usize>) -> Result<String, String> {
     Ok(selected.into_iter().rev().collect::<Vec<_>>().join("\n"))
 }
 
+#[tauri::command]
+fn open_remote_viewer(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("remote-viewer") {
+        window.show().map_err(|error| error.to_string())?;
+        window
+            .set_fullscreen(true)
+            .map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(
+        &app,
+        "remote-viewer",
+        WebviewUrl::App("remote-viewer.html".into()),
+    )
+    .title("MapLink 远程桌面")
+    .fullscreen(true)
+    .build()
+    .map_err(|error| format!("打开全屏远程桌面失败：{error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_remote_viewer_fullscreen(app: AppHandle, fullscreen: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window("remote-viewer")
+        .ok_or_else(|| "远程桌面窗口尚未打开".to_string())?;
+    window
+        .set_fullscreen(fullscreen)
+        .map_err(|error| format!("切换全屏失败：{error}"))
+}
+
+#[tauri::command]
+fn close_remote_viewer(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("remote-viewer") {
+        window
+            .close()
+            .map_err(|error| format!("关闭远程桌面窗口失败：{error}"))?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -1235,8 +1296,15 @@ pub fn run() {
             start_remote_control,
             remote_control_session,
             remote_control_frame,
+            remote_control_clipboard,
             send_remote_control_input,
+            update_remote_control_settings,
             stop_remote_control,
+            read_local_clipboard,
+            write_local_clipboard,
+            open_remote_viewer,
+            set_remote_viewer_fullscreen,
+            close_remote_viewer,
             check_for_update,
             download_and_install_update
         ])
@@ -1274,6 +1342,8 @@ mod tests {
             protocol: "tcp".into(),
             ssh_user: "codex-user".into(),
             remote_control_enabled: false,
+            remote_quality: default_remote_quality(),
+            remote_clipboard_enabled: true,
             proxies: vec![
                 Proxy {
                     name: "ssh".into(),
