@@ -71,6 +71,8 @@ let desktopInputQueue = [];
 let desktopInputTimer;
 let lastRemoteFrame = null;
 let desktopFrameSamples = [];
+let pendingDesktopFrame = null;
+let desktopFrameAnimation;
 let desktopClipboardAfter = 0;
 let desktopClipboardLastText;
 let remoteViewerOpen = false;
@@ -509,22 +511,7 @@ async function readRemoteFrames(currentProfile, sessionID, generation, after = 0
       if (!frame) continue;
       after = frame.sequence;
       lastRemoteFrame = frame;
-      remoteScreenImage.src = frame.dataUrl;
-      const now = performance.now();
-      desktopFrameSamples.push({ at: now, bytes: Number(frame.byteLength || 0) });
-      desktopFrameSamples = desktopFrameSamples.filter((sample) => now - sample.at <= 1000);
-      const elapsed = desktopFrameSamples.length > 1
-        ? desktopFrameSamples.at(-1).at - desktopFrameSamples[0].at
-        : 0;
-      const fps = elapsed > 0 ? ((desktopFrameSamples.length - 1) * 1000) / elapsed : 0;
-      const bitrate = elapsed > 0
-        ? (desktopFrameSamples.reduce((total, sample) => total + sample.bytes, 0) * 8) / elapsed / 1000
-        : 0;
-      desktopFrameMeta.textContent = `${frame.width} × ${frame.height} · ${fps.toFixed(1)} FPS · ${bitrate.toFixed(1)} Mbps · 帧 ${frame.sequence}`;
-      if (remoteViewerOpen) {
-        emit('remote-viewer-frame', frame).catch(() => {});
-        emit('remote-viewer-metrics', { text: desktopFrameMeta.textContent }).catch(() => {});
-      }
+      scheduleRemoteFrame(frame);
     } catch (error) {
       if (generation !== desktopGeneration) return;
       await disconnectRemoteDesktop().catch(() => {});
@@ -543,6 +530,9 @@ async function disconnectRemoteDesktop(notifyServer = true) {
   desktopInputQueue = [];
   lastRemoteFrame = null;
   desktopFrameSamples = [];
+  pendingDesktopFrame = null;
+  if (desktopFrameAnimation !== undefined) window.cancelAnimationFrame(desktopFrameAnimation);
+  desktopFrameAnimation = undefined;
   desktopClipboardAfter = 0;
   desktopClipboardLastText = undefined;
   window.clearTimeout(desktopInputTimer);
@@ -745,6 +735,32 @@ async function syncLocalClipboard(currentProfile, sessionID, generation) {
     }
     await delay(400);
   }
+}
+
+function scheduleRemoteFrame(frame) {
+  pendingDesktopFrame = frame;
+  if (desktopFrameAnimation !== undefined) return;
+  desktopFrameAnimation = window.requestAnimationFrame(() => {
+    desktopFrameAnimation = undefined;
+    const latest = pendingDesktopFrame;
+    pendingDesktopFrame = null;
+    if (!latest) return;
+    if (remoteViewerOpen) emit('remote-viewer-frame', latest).catch(() => {});
+    else remoteScreenImage.src = latest.dataUrl;
+    const now = performance.now();
+    desktopFrameSamples.push({ at: now, bytes: Number(latest.byteLength || 0) });
+    desktopFrameSamples = desktopFrameSamples.filter((sample) => now - sample.at <= 1000);
+    const elapsed = desktopFrameSamples.length > 1
+      ? desktopFrameSamples.at(-1).at - desktopFrameSamples[0].at
+      : 0;
+    const fps = elapsed > 0 ? ((desktopFrameSamples.length - 1) * 1000) / elapsed : 0;
+    const bitrate = elapsed > 0
+      ? (desktopFrameSamples.reduce((total, sample) => total + sample.bytes, 0) * 8) / elapsed / 1000
+      : 0;
+    desktopFrameMeta.textContent = `${latest.width} × ${latest.height} · ${fps.toFixed(1)} FPS · ${bitrate.toFixed(1)} Mbps · 帧 ${latest.sequence}`;
+    if (remoteViewerOpen) emit('remote-viewer-metrics', { text: desktopFrameMeta.textContent }).catch(() => {});
+    if (pendingDesktopFrame) scheduleRemoteFrame(pendingDesktopFrame);
+  });
 }
 
 async function readRemoteClipboard(currentProfile, sessionID, generation) {

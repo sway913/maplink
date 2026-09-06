@@ -218,6 +218,9 @@ test('远程桌面支持高帧率画质、独立全屏窗口和双向剪贴板',
   assert.match(rust, /Clipboard/);
   assert.match(rust, /move_mouse/);
   assert.match(rust, /danger_accept_invalid_certs/);
+  assert.match(rust, /static SHARED_CLIENT: OnceLock/);
+  assert.match(rust, /pool_max_idle_per_host\(16\)/);
+  assert.match(rust, /\.no_proxy\(\)/);
   assert.match(rust, /ACCEPT_ENCODING, "identity"/);
   assert.match(rust, /已重试 3 次/);
   assert.match(script, /option\(available\.length \? `选择在线设备（\$\{available\.length\}）` : '暂无在线'\)/);
@@ -226,6 +229,8 @@ test('远程桌面支持高帧率画质、独立全屏窗口和双向剪贴板',
   assert.match(script, /需要系统授权/);
   assert.match(script, /targetDeviceId: targetDeviceID/);
   assert.match(script, /byteLength/);
+  assert.match(script, /requestAnimationFrame/);
+  assert.match(script, /pendingDesktopFrame/);
   assert.match(script, /remote-viewer-frame/);
   assert.match(script, /remote_control_clipboard/);
   assert.match(script, /requestPermissions/);
@@ -233,6 +238,7 @@ test('远程桌面支持高帧率画质、独立全屏窗口和双向剪贴板',
   assert.match(viewerHtml, /id="viewer-clipboard"/);
   assert.match(viewerScript, /remote-viewer-input/);
   assert.match(viewerScript, /set_remote_viewer_fullscreen/);
+  assert.match(viewerScript, /requestAnimationFrame/);
   const runtimeRefresh = script.slice(script.indexOf('async function refreshRuntime'), script.indexOf('function remoteShellRequest'));
   assert.doesNotMatch(runtimeRefresh, /refreshRemoteControlDevices/);
   assert.doesNotMatch(script, /device\.permission === 'ready'\);/);
