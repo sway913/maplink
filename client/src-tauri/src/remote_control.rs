@@ -163,15 +163,9 @@ struct RemoteInputsResponse {
     sequence: u64,
     state: String,
     events: Vec<SequencedRemoteInput>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RemoteFrameExchange {
-    sequence: u64,
-    state: String,
-    events: Vec<SequencedRemoteInput>,
+    #[serde(default)]
     quality: String,
+    #[serde(default)]
     clipboard_enabled: bool,
 }
 
@@ -207,8 +201,8 @@ struct FrameUpload {
     jpeg: Vec<u8>,
 }
 
-enum FrameUploadFeedback {
-    Exchange(RemoteFrameExchange),
+enum RemoteSessionFeedback {
+    Input(RemoteInputsResponse),
     Closed,
     Error(String),
 }
@@ -719,7 +713,7 @@ fn serve_remote_session(
         "error": "",
     });
     let _: RemoteSession = relay.json_request(Method::POST, &accept_path, &accept)?;
-    let (feedback_sender, feedback_receiver) = mpsc::channel();
+    let (feedback_sender, feedback_receiver) = mpsc::sync_channel(8);
     let mut upload_senders = Vec::with_capacity(FRAME_UPLOAD_WORKERS);
     for worker_index in 0..FRAME_UPLOAD_WORKERS {
         let (upload_sender, upload_receiver) = mpsc::sync_channel(0);
@@ -732,7 +726,6 @@ fn serve_remote_session(
                 frame_uploader_loop(
                     worker_relay,
                     worker_session_id,
-                    worker_index == 0,
                     upload_receiver,
                     worker_feedback,
                 );
@@ -740,6 +733,13 @@ fn serve_remote_session(
             .map_err(|error| format!("启动远程画面上传线程失败：{error}"))?;
         upload_senders.push(upload_sender);
     }
+    let input_relay = relay.clone();
+    let input_session_id = session.id.clone();
+    let input_feedback = feedback_sender.clone();
+    thread::Builder::new()
+        .name("maplink-remote-input".into())
+        .spawn(move || remote_input_loop(input_relay, input_session_id, input_feedback))
+        .map_err(|error| format!("启动远程输入接收线程失败：{error}"))?;
     drop(feedback_sender);
     let mut frame_sequence = 0_u64;
     let mut applied_input_sequence = 0_u64;
@@ -756,7 +756,7 @@ fn serve_remote_session(
         let frame_started = Instant::now();
         for feedback in feedback_receiver.try_iter() {
             match feedback {
-                FrameUploadFeedback::Exchange(exchange) => {
+                RemoteSessionFeedback::Input(exchange) => {
                     if exchange.state != "active" {
                         return Ok(());
                     }
@@ -771,8 +771,8 @@ fn serve_remote_session(
                         clipboard_enabled = exchange.clipboard_enabled;
                     }
                 }
-                FrameUploadFeedback::Closed => return Ok(()),
-                FrameUploadFeedback::Error(error) => return Err(error),
+                RemoteSessionFeedback::Closed => return Ok(()),
+                RemoteSessionFeedback::Error(error) => return Err(error),
             }
         }
         if heartbeat_at.elapsed().unwrap_or_default() >= Duration::from_secs(10) {
@@ -825,17 +825,11 @@ fn serve_remote_session(
 fn frame_uploader_loop(
     relay: RelayClient,
     session_id: String,
-    receives_input: bool,
     uploads: Receiver<FrameUpload>,
-    feedback: mpsc::Sender<FrameUploadFeedback>,
+    feedback: mpsc::SyncSender<RemoteSessionFeedback>,
 ) {
-    let mut input_sequence = 0_u64;
     for frame in uploads {
-        let frame_path = if receives_input {
-            format!("/api/remote/sessions/{session_id}/frames?inputAfter={input_sequence}")
-        } else {
-            format!("/api/remote/sessions/{session_id}/frames")
-        };
+        let frame_path = format!("/api/remote/sessions/{session_id}/frames");
         let response = relay.request(
             Method::POST,
             &frame_path,
@@ -850,54 +844,45 @@ fn frame_uploader_loop(
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                let _ = feedback.send(FrameUploadFeedback::Error(error));
+                let _ = feedback.send(RemoteSessionFeedback::Error(error));
                 return;
             }
         };
         let status = response.status();
         if status == StatusCode::CONFLICT || status == StatusCode::NOT_FOUND {
-            let _ = feedback.send(FrameUploadFeedback::Closed);
+            let _ = feedback.send(RemoteSessionFeedback::Closed);
             return;
         }
         if !status.is_success() {
-            let _ = feedback.send(FrameUploadFeedback::Error(format!(
+            let _ = feedback.send(RemoteSessionFeedback::Error(format!(
                 "上传远程画面失败：HTTP {status}"
             )));
             return;
         }
-        if !receives_input {
-            continue;
-        }
-        let exchange = if status == StatusCode::NO_CONTENT {
-            let input_path =
-                format!("/api/remote/sessions/{session_id}/inputs?after={input_sequence}&wait=0");
-            match relay.empty_json::<RemoteInputsResponse>(Method::GET, &input_path) {
-                Ok(input) => RemoteFrameExchange {
-                    sequence: input.sequence,
-                    state: input.state,
-                    events: input.events,
-                    quality: String::new(),
-                    clipboard_enabled: false,
-                },
-                Err(error) => {
-                    let _ = feedback.send(FrameUploadFeedback::Error(error));
-                    return;
-                }
-            }
-        } else {
-            match decode_response::<RemoteFrameExchange>(response) {
-                Ok(exchange) => exchange,
-                Err(error) => {
-                    let _ = feedback.send(FrameUploadFeedback::Error(error));
-                    return;
-                }
+    }
+}
+
+fn remote_input_loop(
+    relay: RelayClient,
+    session_id: String,
+    feedback: mpsc::SyncSender<RemoteSessionFeedback>,
+) {
+    let mut input_sequence = 0_u64;
+    loop {
+        let input_path = format!("/api/remote/sessions/{session_id}/inputs?after={input_sequence}");
+        let input = match relay.empty_json::<RemoteInputsResponse>(Method::GET, &input_path) {
+            Ok(input) => input,
+            Err(error) => {
+                let _ = feedback.send(RemoteSessionFeedback::Error(error));
+                return;
             }
         };
-        input_sequence = input_sequence.max(exchange.sequence);
-        if feedback
-            .send(FrameUploadFeedback::Exchange(exchange))
-            .is_err()
-        {
+        input_sequence = input_sequence.max(input.sequence);
+        if input.state != "active" {
+            let _ = feedback.send(RemoteSessionFeedback::Closed);
+            return;
+        }
+        if feedback.send(RemoteSessionFeedback::Input(input)).is_err() {
             return;
         }
     }
@@ -1418,8 +1403,8 @@ mod tests {
     }
 
     #[test]
-    fn combined_frame_exchange_accepts_input_and_settings() {
-        let exchange: RemoteFrameExchange = serde_json::from_str(
+    fn dedicated_input_exchange_accepts_events_and_settings() {
+        let exchange: RemoteInputsResponse = serde_json::from_str(
             r#"{"sequence":2,"state":"active","events":[{"sequence":2,"event":{"type":"clipboard","text":"hello"}}],"quality":"4k60","clipboardEnabled":true}"#,
         )
         .unwrap();
