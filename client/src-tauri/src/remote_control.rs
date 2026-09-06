@@ -159,6 +159,7 @@ struct SequencedRemoteInput {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RemoteInputsResponse {
     sequence: u64,
     state: String,
