@@ -13,10 +13,11 @@ const profile = {
   proxies: [{ name: 'ssh-e2e', type: 'tcp', localIP: '127.0.0.1', localPort: 22, remotePort: 30022 }],
 };
 
-async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, sshInstallDelay = 0) {
-  await page.addInitScript(({ savedProfile, devices, sshReady, installDelay }) => {
+async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, sshInstallDelay = 0, firstRemoteFrame = null) {
+  await page.addInitScript(({ savedProfile, devices, sshReady, installDelay, remoteFrame }) => {
     const calls = [];
     let openSSHReady = sshReady;
+    let frameDelivered = false;
     window.__MAPLINK_E2E_CALLS__ = calls;
     window.__TAURI__ = {
       event: { listen: async () => () => {} },
@@ -53,7 +54,12 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
             case 'start_remote_control':
               if (!arguments_.targetDeviceId || 'targetDeviceID' in arguments_) throw new Error('start_remote_control requires targetDeviceId');
               return { id: 'session-e5', targetDeviceID: arguments_.targetDeviceId, controllerDeviceID: 'local-e2e', state: 'active', error: '', sshAuthorized: true, screenX: 0, screenY: 0, screenWidth: 1920, screenHeight: 1080, frameSequence: 0 };
-            case 'remote_control_frame': return new Promise(() => {});
+            case 'remote_control_frame':
+              if (remoteFrame && !frameDelivered) {
+                frameDelivered = true;
+                return remoteFrame;
+              }
+              return new Promise(() => {});
             case 'stop_remote_control':
             case 'save_profile': return null;
             default: return null;
@@ -61,7 +67,13 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
         },
       },
     };
-  }, { savedProfile: profile, devices: remoteDevices, sshReady: sshInitiallyReady, installDelay: sshInstallDelay });
+  }, {
+    savedProfile: profile,
+    devices: remoteDevices,
+    sshReady: sshInitiallyReady,
+    installDelay: sshInstallDelay,
+    remoteFrame: firstRemoteFrame,
+  });
 }
 
 test('一次性配对会自动保存独立设备凭据和可选接入端口', async ({ page }) => {
@@ -113,6 +125,27 @@ test('二级 Tab 可在 SSH 与远程控制之间切换并建立远程会话', a
   const startCall = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.find((item) => item.command === 'start_remote_control'));
   expect(startCall.arguments_.targetDeviceId).toBe('e5');
   expect(startCall.arguments_).not.toHaveProperty('targetDeviceID');
+});
+
+test('远程会话收到的 data 图片帧会显示在桌面区域', async ({ page }) => {
+  await installTauriMock(page, [
+    { deviceID: 'local-e2e', name: '当前设备', platform: 'macos', permission: 'permission-required' },
+    { deviceID: 'e5', name: 'e5主机', platform: 'windows', permission: 'ready' },
+  ], true, 0, {
+    sequence: 1,
+    width: 1,
+    height: 1,
+    dataUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
+  });
+  await page.goto('/');
+  await page.getByRole('tab', { name: '远程连接' }).click();
+  await page.getByRole('tab', { name: '远程控制', exact: true }).click();
+  await page.locator('#connect-remote-desktop').click();
+
+  await expect(page.locator('#desktop-session-status')).toContainText('已连接 e5主机');
+  await expect(page.locator('#remote-screen-image')).toHaveAttribute('src', /^data:image\/gif;base64,/);
+  await expect.poll(() => page.locator('#remote-screen-image').evaluate((image) => image.naturalWidth)).toBe(1);
+  await expect(page.locator('#desktop-frame-meta')).toContainText('帧 1');
 });
 
 test('进入远程控制只自动刷新一次，手动刷新仍可用', async ({ page }) => {

@@ -39,6 +39,7 @@ test('客户端把连接配置、远程连接和关于放在顶部 Tab', async (
   assert.equal(packageConfig.dependencies['@xterm/xterm'], '5.5.0');
   assert.equal(packageConfig.dependencies['@xterm/addon-fit'], '0.10.0');
   assert.match(tauriConfig.app.security.csp, /style-src 'self' 'unsafe-inline'/);
+  assert.match(tauriConfig.app.security.csp, /img-src 'self' data:/);
   assert.match(cargo, new RegExp(`version = "${versionPattern}"`));
 });
 

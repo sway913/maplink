@@ -462,7 +462,7 @@ async function readRemoteFrames(currentProfile, sessionID, generation, after = 0
       desktopFrameMeta.textContent = `${frame.width} × ${frame.height} · 帧 ${frame.sequence} · 服务器实时中转`;
     } catch (error) {
       if (generation !== desktopGeneration) return;
-      await disconnectRemoteDesktop(false);
+      await disconnectRemoteDesktop().catch(() => {});
       setDesktopSessionState('disconnected', '远程桌面已断开');
       desktopHostStatus.textContent = `远程画面中断：${error}`;
       desktopHostStatus.classList.add('error');
