@@ -6,6 +6,7 @@ const profile = {
   serverPort: 7000,
   managerPort: 7400,
   token: 'e2e-token-0123456789',
+  deviceCredential: '',
   protocol: 'tcp',
   sshUser: 'tester',
   remoteControlEnabled: true,
@@ -34,6 +35,16 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
               return { platform: 'windows', clientInstalled: true, serverInstalled: true, serverRunning: true, keyAvailable: true, identityPath: 'maplink_ed25519', message: 'OpenSSH 与 MapLink 专用免密密钥已就绪。' };
             case 'client_status': return { running: true, installed: true, frpcVersion: '0.71.0', pid: 6000, binaryPath: 'frpc.exe', configPath: 'frpc.toml', logPath: 'frpc.log' };
             case 'client_logs': return 'e2e client ready';
+            case 'enroll_device': return {
+              deviceID: arguments_.deviceID,
+              deviceCredential: 'device-credential-e2e-0123456789abcdef',
+              serverAddr: arguments_.serverAddr,
+              serverPort: 7001,
+              managerPort: arguments_.managerPort,
+              controlPorts: [7000, 7001],
+              token: 'paired-token-e2e-0123456789',
+              protocol: 'tcp',
+            };
             case 'remote_host_status':
             case 'start_remote_host': return { enabled: true, state: 'ready', message: '本机可被其他设备发现' };
             case 'remote_control_devices': return devices;
@@ -48,6 +59,23 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
     };
   }, { savedProfile: profile, devices: remoteDevices, sshReady: sshInitiallyReady, installDelay: sshInstallDelay });
 }
+
+test('一次性配对会自动保存独立设备凭据和可选接入端口', async ({ page }) => {
+  await installTauriMock(page, []);
+  await page.goto('/');
+  await page.locator('#deviceID').fill('paired-e2e');
+  await page.locator('#pairingCode').fill('ABCDE-FGHIJ-KLMNO-PQRST');
+  await page.locator('#enroll-device').click();
+
+  await expect(page.locator('#pairing-feedback')).toContainText('设备配对成功');
+  await expect(page.locator('#serverPort')).toHaveValue('7001');
+  await expect(page.locator('#serverPort option')).toHaveCount(2);
+  await expect(page.locator('#token')).toHaveValue('paired-token-e2e-0123456789');
+  await expect(page.locator('#deviceCredential')).toHaveValue('device-credential-e2e-0123456789abcdef');
+  const calls = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__);
+  expect(calls.some((item) => item.command === 'enroll_device')).toBe(true);
+  expect(calls.some((item) => item.command === 'save_profile' && item.arguments_.profile.deviceCredential.startsWith('device-credential-'))).toBe(true);
+});
 
 test('二级 Tab 可在 SSH 与远程控制之间切换并建立远程会话', async ({ page }) => {
   await installTauriMock(page, [

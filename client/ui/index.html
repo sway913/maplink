@@ -26,7 +26,7 @@
         <section class="notice"><strong>已内置官方原版 frpc 0.71.0</strong><p>Windows 使用 WebView2，macOS 使用系统 WKWebView；两个平台都无需另装 frpc。</p></section>
         <form id="profile-form">
         <section class="panel">
-          <div class="section-title"><div><small>SERVER</small><h2>服务端信息</h2></div></div>
+          <div class="section-title"><div><small>SERVER</small><h2>服务端信息</h2><p>推荐使用服务端设备中心生成的一次性配对码；旧服务器仍可手动填写 Token。</p></div></div>
           <div class="grid">
             <label>设备标识<input id="deviceID" value="device-01" pattern="[A-Za-z0-9_-]{1,32}" maxlength="32" required /></label>
             <label>服务器 IP<input id="serverAddr" value="" placeholder="请输入服务器地址" required /></label>
@@ -35,6 +35,13 @@
             <label class="wide">认证 Token<input id="token" type="password" placeholder="从服务端管理台复制" required /></label>
             <label>传输协议<select id="protocol"><option value="tcp">TCP</option><option value="kcp">KCP</option><option value="quic">QUIC</option></select></label>
           </div>
+          <div class="pairing-box">
+            <div><strong>快捷设备配对</strong><span>先填写设备标识、服务器地址和管理端口，再输入管理台生成的 20 位一次性配对码。</span></div>
+            <label>一次性配对码<input id="pairingCode" maxlength="23" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" /></label>
+            <button class="primary" id="enroll-device" type="button">配对并填充配置</button>
+            <span id="pairing-feedback" aria-live="polite"></span>
+          </div>
+          <input id="deviceCredential" type="hidden" value="" />
         </section>
         <section class="panel">
           <div class="section-title"><div><small>PROXIES</small><h2>端口映射</h2><p>同一设备可添加多条 TCP/UDP；不同设备不要重复占用相同协议的远程端口。</p></div><button id="add-proxy" type="button">＋ 添加映射</button></div>
@@ -174,7 +181,7 @@
             </div>
           </div>
           <div class="about-content">
-            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.6.4</strong></div>
+            <div class="about-version"><span>当前版本</span><strong id="about-current-version">版本 0.7.0</strong></div>
             <section class="about-update" aria-labelledby="about-update-title">
               <div>
                 <small>SOFTWARE UPDATE</small>

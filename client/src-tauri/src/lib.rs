@@ -1,6 +1,11 @@
+use aes_gcm::{
+    aead::{rand_core::RngCore, Aead, OsRng, Payload},
+    Aes256Gcm, Nonce,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL, Engine as _};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
@@ -47,12 +52,47 @@ struct Profile {
     #[serde(default = "default_manager_port")]
     manager_port: u16,
     token: String,
+    #[serde(default)]
+    device_credential: String,
     protocol: String,
     #[serde(default)]
     ssh_user: String,
     #[serde(default)]
     remote_control_enabled: bool,
     proxies: Vec<Proxy>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnrollmentResult {
+    #[serde(rename = "deviceID")]
+    device_id: String,
+    device_credential: String,
+    server_addr: String,
+    server_port: u16,
+    manager_port: u16,
+    control_ports: Vec<u16>,
+    token: String,
+    protocol: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnrollmentRequest<'a> {
+    #[serde(rename = "codeID")]
+    code_id: &'a str,
+    nonce: &'a str,
+    proof: &'a str,
+    #[serde(rename = "deviceID")]
+    device_id: &'a str,
+    name: &'a str,
+    platform: &'a str,
+}
+
+#[derive(Deserialize)]
+struct EnrollmentEnvelope {
+    nonce: String,
+    ciphertext: String,
 }
 
 #[derive(Serialize)]
@@ -398,6 +438,141 @@ fn local_username() -> String {
     keys.iter()
         .find_map(|key| std::env::var(key).ok())
         .unwrap_or_default()
+}
+
+fn local_device_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "MapLink Device".into())
+}
+
+fn normalize_pairing_code(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !matches!(character, '-' | ' '))
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+#[tauri::command]
+async fn enroll_device(
+    server_addr: String,
+    manager_port: u16,
+    device_id: String,
+    pairing_code: String,
+) -> Result<EnrollmentResult, String> {
+    let server_addr = server_addr.trim().to_string();
+    let device_id = device_id.trim().to_string();
+    if server_addr.is_empty()
+        || server_addr.len() > 253
+        || server_addr.contains("//")
+        || manager_port == 0
+    {
+        return Err("服务器地址或管理端口无效".into());
+    }
+    if device_id.is_empty()
+        || device_id.len() > 32
+        || !device_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("设备标识只能包含字母、数字、短横线和下划线，长度 1-32".into());
+    }
+    let normalized_code = normalize_pairing_code(&pairing_code);
+    if normalized_code.len() != 20 {
+        return Err("配对码格式无效".into());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let pairing_key = Sha256::digest(normalized_code.as_bytes());
+        let code_id = &normalized_code[..5];
+        let name = local_device_name();
+        let platform = local_platform();
+        let mut nonce_bytes = [0_u8; 18];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let proof_nonce = BASE64_URL.encode(nonce_bytes);
+        let proof_payload = format!("{device_id}\n{name}\n{platform}\n{proof_nonce}");
+        let mut proof_mac = <Hmac<Sha256> as Mac>::new_from_slice(&pairing_key)
+            .map_err(|_| "配对码无法用于安全证明".to_string())?;
+        proof_mac.update(proof_payload.as_bytes());
+        let proof = proof_mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let client = reqwest::blocking::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .connect_timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|error| format!("初始化配对连接失败：{error}"))?;
+        let url = format!(
+            "https://{}:{manager_port}/api/client/enroll",
+            manager_host(&server_addr)
+        );
+        let response = client
+            .post(url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::CACHE_CONTROL, "no-store")
+            .json(&EnrollmentRequest {
+                code_id,
+                nonce: &proof_nonce,
+                proof: &proof,
+                device_id: &device_id,
+                name: &name,
+                platform,
+            })
+            .send()
+            .map_err(|error| format!("无法连接 MapLink Server：{error}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .map_err(|error| format!("读取配对响应失败：{error}"))?;
+        if !status.is_success() {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
+                if let Some(message) = value.get("error").and_then(|item| item.as_str()) {
+                    return Err(message.to_string());
+                }
+            }
+            return Err(format!("设备配对失败：HTTP {status}"));
+        }
+        let envelope: EnrollmentEnvelope = serde_json::from_slice(&body)
+            .map_err(|error| format!("服务端配对响应无效：{error}"))?;
+        let response_nonce = BASE64_URL
+            .decode(envelope.nonce)
+            .map_err(|_| "服务端配对响应随机数无效".to_string())?;
+        let ciphertext = BASE64_URL
+            .decode(envelope.ciphertext)
+            .map_err(|_| "服务端配对响应密文无效".to_string())?;
+        if response_nonce.len() != 12 || ciphertext.len() < 16 {
+            return Err("服务端配对响应密文不完整".into());
+        }
+        let cipher = <Aes256Gcm as aes_gcm::KeyInit>::new_from_slice(&pairing_key)
+            .map_err(|_| "初始化配对响应解密失败".to_string())?;
+        let plain = cipher
+            .decrypt(
+                Nonce::from_slice(&response_nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: b"maplink-device-enrollment-v1",
+                },
+            )
+            .map_err(|_| "配对响应认证失败，请确认配对码和服务器地址".to_string())?;
+        let result: EnrollmentResult = serde_json::from_slice(&plain)
+            .map_err(|error| format!("解密后的设备配置无效：{error}"))?;
+        if result.device_id != device_id
+            || result.device_credential.len() < 32
+            || result.token.len() < 16
+            || result.server_port == 0
+            || result.manager_port == 0
+        {
+            return Err("服务端返回的设备配置不完整".into());
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|error| format!("设备配对任务异常：{error}"))?
 }
 
 fn hide_windows_console(command: &mut Command) {
@@ -961,7 +1136,14 @@ fn save_profile(app: AppHandle, profile: Profile) -> Result<(), String> {
     let parent = path.parent().ok_or("配置目录无效")?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let contents = toml::to_string_pretty(&profile).map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
+    fs::write(&path, contents).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("限制客户端配置权限失败：{error}"))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1032,6 +1214,7 @@ pub fn run() {
         .manage(RemoteHostState::default())
         .invoke_handler(tauri::generate_handler![
             render_config,
+            enroll_device,
             save_profile,
             load_profile,
             start_client,
@@ -1087,6 +1270,7 @@ mod tests {
             server_port: 7000,
             manager_port: 7400,
             token: "0123456789abcdef".into(),
+            device_credential: String::new(),
             protocol: "tcp".into(),
             ssh_user: "codex-user".into(),
             remote_control_enabled: false,
@@ -1147,6 +1331,16 @@ remotePort = 30022
         .expect("v0.3 profile should remain readable");
         assert_eq!(profile.manager_port, 7400);
         assert!(profile.ssh_user.is_empty());
+        assert!(profile.device_credential.is_empty());
+    }
+
+    #[test]
+    fn pairing_codes_are_normalized_without_changing_credential_content() {
+        assert_eq!(
+            normalize_pairing_code("abcde-fghij-klmno-pqrst"),
+            "ABCDEFGHIJKLMNOPQRST"
+        );
+        assert_eq!(normalize_pairing_code(" ABCDE FGHIJ "), "ABCDEFGHIJ");
     }
 
     fn sidecar_test_dir() -> PathBuf {
