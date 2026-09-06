@@ -35,20 +35,24 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
               return { platform: 'windows', clientInstalled: true, serverInstalled: true, serverRunning: true, keyAvailable: true, identityPath: 'maplink_ed25519', message: 'OpenSSH 与 MapLink 专用免密密钥已就绪。' };
             case 'client_status': return { running: true, installed: true, frpcVersion: '0.71.0', pid: 6000, binaryPath: 'frpc.exe', configPath: 'frpc.toml', logPath: 'frpc.log' };
             case 'client_logs': return 'e2e client ready';
-            case 'enroll_device': return {
-              deviceID: arguments_.deviceID,
-              deviceCredential: 'device-credential-e2e-0123456789abcdef',
-              serverAddr: arguments_.serverAddr,
-              serverPort: 7001,
-              managerPort: arguments_.managerPort,
-              controlPorts: [7000, 7001],
-              token: 'paired-token-e2e-0123456789',
-              protocol: 'tcp',
-            };
+            case 'enroll_device':
+              if (!arguments_.deviceId || 'deviceID' in arguments_) throw new Error('enroll_device requires deviceId');
+              return {
+                deviceID: arguments_.deviceId,
+                deviceCredential: 'device-credential-e2e-0123456789abcdef',
+                serverAddr: arguments_.serverAddr,
+                serverPort: 7001,
+                managerPort: arguments_.managerPort,
+                controlPorts: [7000, 7001],
+                token: 'paired-token-e2e-0123456789',
+                protocol: 'tcp',
+              };
             case 'remote_host_status':
             case 'start_remote_host': return { enabled: true, state: 'ready', message: '本机可被其他设备发现' };
             case 'remote_control_devices': return devices;
-            case 'start_remote_control': return { id: 'session-e5', targetDeviceID: 'e5', controllerDeviceID: 'local-e2e', state: 'active', error: '', sshAuthorized: true, screenX: 0, screenY: 0, screenWidth: 1920, screenHeight: 1080, frameSequence: 0 };
+            case 'start_remote_control':
+              if (!arguments_.targetDeviceId || 'targetDeviceID' in arguments_) throw new Error('start_remote_control requires targetDeviceId');
+              return { id: 'session-e5', targetDeviceID: arguments_.targetDeviceId, controllerDeviceID: 'local-e2e', state: 'active', error: '', sshAuthorized: true, screenX: 0, screenY: 0, screenWidth: 1920, screenHeight: 1080, frameSequence: 0 };
             case 'remote_control_frame': return new Promise(() => {});
             case 'stop_remote_control':
             case 'save_profile': return null;
@@ -83,6 +87,7 @@ test('二级 Tab 可在 SSH 与远程控制之间切换并建立远程会话', a
     { deviceID: 'e5', name: 'e5主机', platform: 'windows', permission: 'ready' },
   ]);
   await page.goto('/');
+  await expect(page.locator('#serverAddr')).toHaveValue(profile.serverAddr);
   await page.getByRole('tab', { name: '远程连接' }).click();
 
   await expect(page.locator('#remote-ssh-panel')).toBeVisible();
@@ -105,6 +110,30 @@ test('二级 Tab 可在 SSH 与远程控制之间切换并建立远程会话', a
   commands = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.map((item) => item.command));
   expect(commands).toContain('remote_control_devices');
   expect(commands).toContain('start_remote_control');
+  const startCall = await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.find((item) => item.command === 'start_remote_control'));
+  expect(startCall.arguments_.targetDeviceId).toBe('e5');
+  expect(startCall.arguments_).not.toHaveProperty('targetDeviceID');
+});
+
+test('进入远程控制只自动刷新一次，手动刷新仍可用', async ({ page }) => {
+  await installTauriMock(page, [
+    { deviceID: 'local-e2e', name: '当前设备', platform: 'windows', permission: 'ready' },
+    { deviceID: 'e5', name: 'e5主机', platform: 'windows', permission: 'ready' },
+  ]);
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'start_remote_host').length)).toBe(1);
+  expect(await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'remote_control_devices').length)).toBe(0);
+
+  await page.getByRole('tab', { name: '远程连接' }).click();
+  await page.getByRole('tab', { name: '远程控制', exact: true }).click();
+  await expect(page.locator('#desktop-device')).toHaveValue('e5');
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'remote_control_devices').length)).toBe(1);
+
+  await page.waitForTimeout(5500);
+  expect(await page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'remote_control_devices').length)).toBe(1);
+
+  await page.locator('#refresh-desktop-devices').click();
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.filter((item) => item.command === 'remote_control_devices').length)).toBe(2);
 });
 
 test('进入 SSH 页面自动检测 OpenSSH，缺失时可一键安装并复检', async ({ page }) => {
