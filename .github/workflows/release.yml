@@ -80,6 +80,7 @@ jobs:
           npm ci
           npm test
           node --check ui/app.js
+          node --check ui/config-view-state.mjs
           node --check ui/vendor/xterm/xterm.js
           node --check ui/vendor/xterm/addon-fit.js
 
@@ -170,6 +171,7 @@ jobs:
           npm ci
           npm test
           node --check ui/app.js
+          node --check ui/config-view-state.mjs
           node --check ui/vendor/xterm/xterm.js
           node --check ui/vendor/xterm/addon-fit.js
 

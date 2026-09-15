@@ -9,6 +9,7 @@ const contentTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
+  ['.mjs', 'text/javascript; charset=utf-8'],
   ['.png', 'image/png'],
 ]);
 
@@ -26,4 +27,4 @@ createServer(async (request, response) => {
     response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     response.end('Not found');
   }
-}).listen(4173, '127.0.0.1');
+}).listen(Number(process.env.MAPLINK_E2E_PORT || 4173), '127.0.0.1');

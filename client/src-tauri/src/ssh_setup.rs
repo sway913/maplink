@@ -417,16 +417,17 @@ mod tests {
 
     #[test]
     fn authorized_key_is_idempotent_and_never_writes_private_material() {
-        let path =
-            std::env::temp_dir().join(format!("maplink-authorized-{}.txt", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("maplink-authorized-{}", std::process::id()));
+        let path = directory.join("authorized_keys");
         let key =
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH test";
-        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&directory);
         assert!(append_authorized_key(&path, key).unwrap());
         assert!(!append_authorized_key(&path, key).unwrap());
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(contents.lines().count(), 1);
         assert!(contents.ends_with("maplink-managed\n"));
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(directory);
     }
 }

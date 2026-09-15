@@ -1,3 +1,5 @@
+import { deriveConfigView, canStartOnboarding } from './config-view-state.mjs';
+
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
 const emit = window.__TAURI__.event.emit;
@@ -9,6 +11,7 @@ const startButton = document.querySelector('#start-client');
 const stopButton = document.querySelector('#stop-client');
 const enrollDeviceButton = document.querySelector('#enroll-device');
 const pairingFeedback = document.querySelector('#pairing-feedback');
+const actionFeedback = document.querySelector('#action-feedback');
 const remoteFeedback = document.querySelector('#remote-feedback');
 const remoteHostFeedback = document.querySelector('#remote-host-feedback');
 const remoteAddress = document.querySelector('#remote-address');
@@ -81,6 +84,130 @@ let lastSSHReadiness;
 let sshInstallProgressTimer;
 let sshInstallStartedAt;
 
+let profileLoaded = false;
+let profileLoadError = '';
+let savedProfile = null;
+let runtimeLoaded = false;
+let runtimeSnapshot = null;
+let runtimeError = '';
+let onboardingStep = 1;
+let credentialsReady = false;
+let mappingConfirmed = false;
+let legacyMode = false;
+let settingsOpen = false;
+let dirty = false;
+let hasUnappliedChanges = false;
+let hydratingProfile = false;
+let onboardingActive = false;
+let onboardingSaveFailed = false;
+let requiresRePair = false;
+const pendingOnboardingKey = 'maplink-onboarding-pending-v1';
+
+function pendingOnboardingDevice() {
+  try { return window.localStorage.getItem(pendingOnboardingKey) || ''; } catch { return ''; }
+}
+
+function setPendingOnboarding(deviceID) {
+  try { window.localStorage.setItem(pendingOnboardingKey, deviceID); } catch { /* WebView storage may be unavailable. */ }
+}
+
+function clearPendingOnboarding() {
+  try { window.localStorage.removeItem(pendingOnboardingKey); } catch { /* Keep the current session usable. */ }
+}
+
+function configView() {
+  const view = deriveConfigView({ profileLoaded, profile: savedProfile, profileError: profileLoadError, runtimeLoaded, runtime: runtimeSnapshot, runtimeError });
+  return onboardingActive && view.mode === 'overview' ? { ...view, mode: 'onboarding' } : view;
+}
+
+function firstInvalidProfileField() {
+  return [...document.querySelector('#profile-form').querySelectorAll('input, select')]
+    .find((field) => field.willValidate && !field.checkValidity());
+}
+
+function requireValidProfileFields() {
+  const invalid = firstInvalidProfileField();
+  if (!invalid) return;
+  if (configView().mode === 'overview' && document.querySelector('#server-panel').contains(invalid)) settingsOpen = true;
+  renderConfigView();
+  invalid.focus();
+  throw new Error(`请检查${invalid.getAttribute('aria-label') || invalid.closest('label')?.textContent?.trim() || '配置字段'}。`);
+}
+
+function setTextIfChanged(element, value) {
+  if (element.textContent !== value) element.textContent = value;
+}
+
+function renderConfigView() {
+  const view = configView();
+  document.querySelector('#config-loading').hidden = !['loading', 'error'].includes(view.mode);
+  setTextIfChanged(document.querySelector('#config-loading-title'), view.mode === 'error' ? '本机配置读取失败' : '正在读取本机配置');
+  setTextIfChanged(document.querySelector('#config-loading-message'), view.mode === 'error' ? profileLoadError : '正在确认设备与 frpc 状态…');
+  document.querySelector('#retry-profile').hidden = view.mode !== 'error';
+  document.querySelector('#retry-runtime').hidden = view.phase !== 'read-error';
+  document.querySelector('#runtime-warning').hidden = view.phase !== 'missing-binary';
+  document.querySelector('#onboarding').hidden = view.mode !== 'onboarding';
+  document.querySelector('#overview').hidden = view.mode !== 'overview';
+  if (['loading', 'error'].includes(view.mode)) return;
+  const onboarding = view.mode === 'onboarding';
+  document.querySelector('#server-panel').hidden = !(onboarding || settingsOpen);
+  document.querySelector('#connection-fields').hidden = !(settingsOpen || (onboarding && legacyMode && onboardingStep >= 2));
+  document.querySelector('#pairing-panel').hidden = !(settingsOpen || (onboarding && onboardingStep === 2));
+  document.querySelector('#pairing-method').hidden = legacyMode;
+  document.querySelector('#legacy-method').hidden = !legacyMode;
+  document.querySelector('#proxy-panel').hidden = !(onboarding ? onboardingStep === 3 : !settingsOpen);
+  document.querySelector('#save-proxies').hidden = onboarding || settingsOpen;
+  document.querySelector('#runtime-panel').hidden = !settingsOpen || onboarding;
+  document.querySelector('#profile-footer').hidden = !settingsOpen || onboarding;
+  document.querySelector('#step-one-actions').hidden = !onboarding || onboardingStep !== 1;
+  document.querySelector('#mapping-check').hidden = !onboarding || onboardingStep !== 3;
+  setTextIfChanged(document.querySelector('#onboarding-phase'), onboardingStep === 1
+    ? '第 1 步 · 填写设备与服务器信息'
+    : onboardingStep === 2 ? '第 2 步 · 使用一次性配对码，或填写旧服务器 Token'
+      : onboardingSaveFailed ? '第 3 步 · 已配对，但本机配置未保存；确认映射后重试启动'
+        : '第 3 步 · 配置已保存，待启动；请确认首条映射');
+  for (const step of document.querySelectorAll('[data-step]')) {
+    step.classList.toggle('current', Number(step.dataset.step) === onboardingStep);
+    step.classList.toggle('completed', Number(step.dataset.step) < onboardingStep);
+  }
+  setTextIfChanged(document.querySelector('#overview-device'), savedProfile?.deviceID || '—');
+  setTextIfChanged(document.querySelector('#overview-status'), view.label);
+  document.querySelector('#overview-status').dataset.phase = view.phase;
+  setTextIfChanged(document.querySelector('#overview-proxy-count'), String(list.querySelectorAll('.proxy-row').length));
+  const note = document.querySelector('#unsaved-note');
+  note.hidden = !(dirty || hasUnappliedChanges || requiresRePair);
+  note.textContent = requiresRePair ? '设备身份已改变；必须重新配对，才能使用新的设备身份启动。'
+    : hasUnappliedChanges ? runtimeSnapshot?.running
+      ? '更改未应用到运行中的 frpc；先停止，再保存并启动。'
+      : '配置尚未应用；点击“保存并启动”以运行新配置。'
+    : '配置有未保存更改。';
+  startButton.disabled = view.phase !== 'stopped' || requiresRePair || Boolean(firstInvalidProfileField());
+  stopButton.disabled = view.phase !== 'running';
+  const openSettings = document.querySelector('#open-settings');
+  openSettings.setAttribute('aria-expanded', String(settingsOpen));
+  openSettings.textContent = settingsOpen ? '返回映射概览' : '连接设置与日志';
+  document.querySelector('#mapping-confirm').checked = mappingConfirmed;
+  document.querySelector('#onboarding-start').disabled = !canStartOnboarding({
+    credentialsReady, mappingConfirmed, proxyCount: list.querySelectorAll('.proxy-row').length,
+    mappingValid: [...list.querySelectorAll('[data-field]')].every((field) => field.checkValidity()),
+  }) || view.phase === 'missing-binary' || view.phase === 'read-error';
+}
+
+function markConfigChanged(mapping = false) {
+  if (hydratingProfile) return;
+  dirty = true;
+  if (runtimeSnapshot?.running) hasUnappliedChanges = true;
+  if (mapping) mappingConfirmed = false;
+  renderConfigView();
+}
+
+function showActionFeedback(message, error = false) {
+  actionFeedback.hidden = false;
+  setTextIfChanged(actionFeedback, message);
+  actionFeedback.classList.toggle('error', error);
+  setTextIfChanged(feedback, message);
+}
+
 function switchTab(name, focus = false) {
   for (const button of document.querySelectorAll('[data-tab]')) {
     const active = button.dataset.tab === name;
@@ -116,8 +243,9 @@ function addProxy(value = {}) {
   for (const input of row.querySelectorAll('[data-field]')) {
     if (value[input.dataset.field] !== undefined) input.value = value[input.dataset.field];
   }
-  row.querySelector('[data-remove]').addEventListener('click', () => row.remove());
+  row.querySelector('[data-remove]').addEventListener('click', () => { row.remove(); markConfigChanged(true); });
   list.append(row);
+  markConfigChanged(true);
   return row;
 }
 
@@ -142,11 +270,11 @@ function profile() {
 
 async function showResult(action, success = '✓ 操作完成') {
   try {
-    feedback.textContent = '正在处理…';
+    showActionFeedback('正在处理…');
     await action();
-    feedback.textContent = success;
+    showActionFeedback(success);
   } catch (error) {
-    feedback.textContent = `错误：${error}`;
+    showActionFeedback(`错误：${error}`, true);
   }
 }
 
@@ -328,6 +456,9 @@ function setRemoteHostFeedback(message, type = '') {
 }
 
 function paintRuntime(status) {
+  runtimeSnapshot = status;
+  runtimeLoaded = true;
+  runtimeError = '';
   runtimeStatus.classList.toggle('running', status.running);
   runtimeStatus.classList.toggle('missing', !status.installed);
   const frpcLabel = `frpc ${status.frpcVersion || '0.71.0'}`;
@@ -339,6 +470,7 @@ function paintRuntime(status) {
   document.querySelector('#log-path').textContent = status.logPath;
   startButton.disabled = status.running || !status.installed;
   stopButton.disabled = !status.running;
+  renderConfigView();
 }
 
 function option(text, value = '') {
@@ -365,9 +497,12 @@ async function refreshRuntime() {
     paintRemoteHostStatus(hostStatus);
     document.querySelector('#client-logs').textContent = logs || '暂无日志';
   } catch (error) {
+    runtimeLoaded = true;
+    runtimeError = String(error);
     runtimeStatus.textContent = '状态读取失败';
-    runtimeStatus.classList.add('missing');
-    feedback.textContent = `错误：${error}`;
+    runtimeStatus.classList.remove('running', 'missing');
+    showActionFeedback(`状态读取失败：${error}`, true);
+    renderConfigView();
   }
 }
 
@@ -376,7 +511,7 @@ function remoteShellRequest() {
   const username = document.querySelector('#remote-user').value.trim();
   const port = Number(document.querySelector('#remote-target-port').value);
   const platform = document.querySelector('#remote-os').value;
-  if (!host) throw new Error('请先在“连接配置”填写服务器地址');
+  if (!host) throw new Error('请先在“概览 → 连接设置与日志”填写服务器地址');
   if (host.length > 253 || !/^[A-Za-z0-9[\]][A-Za-z0-9.:[\]-]*$/.test(host)) throw new Error('服务器地址格式无效');
   if (!/^[A-Za-z0-9._\\-]{1,64}$/.test(username)) throw new Error('SSH 用户名格式无效');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('公网 SSH 端口无效');
@@ -401,7 +536,7 @@ function paintRemoteHostStatus(status) {
 async function syncRemoteHost(requestPermissions = false) {
   const currentProfile = profile();
   if (!currentProfile.serverAddr || currentProfile.token.length < 16) {
-    paintRemoteHostStatus({ state: 'disabled', message: '请先在“连接配置”填写服务器地址和 Token。' });
+    paintRemoteHostStatus({ state: 'disabled', message: '请先在“概览 → 连接设置与日志”填写服务器地址和 Token。' });
     return;
   }
   const status = await invoke('start_remote_host', {
@@ -812,10 +947,36 @@ async function enrollDevice() {
     serverPort.replaceChildren(...controlPorts.map((port) => option(String(port), String(port))));
     serverPort.value = String(result.serverPort);
     document.querySelector('#pairingCode').value = '';
-    await invoke('save_profile', { profile: profile() });
+    credentialsReady = true;
+    requiresRePair = false;
+    try {
+      await invoke('save_profile', { profile: profile() });
+    } catch (saveError) {
+      onboardingSaveFailed = true;
+      onboardingStep = 3;
+      dirty = true;
+      pairingFeedback.className = 'error';
+      pairingFeedback.textContent = `设备配对成功，但本机配置未保存：${saveError}`;
+      showActionFeedback(onboardingActive
+        ? '设备配对成功，但配置未保存。请确认映射并重试“保存并启动”；关闭应用前务必完成。'
+        : '设备配对成功，但配置未保存。请修正配置并重试“保存配置”；关闭应用前务必完成。', true);
+      renderConfigView();
+      if (onboardingActive) list.querySelector('[data-field="name"]')?.focus();
+      return;
+    }
+    savedProfile = profile();
+    if (onboardingActive) setPendingOnboarding(savedProfile.deviceID);
+    onboardingSaveFailed = false;
+    onboardingStep = 3;
+    dirty = false;
     pairingFeedback.textContent = '✓ 设备配对成功，已保存独立控制凭据和连接配置。';
-    feedback.textContent = '✓ 配置已保存，可直接启动 frpc';
-    await syncRemoteHost();
+    showActionFeedback('配置已保存，待启动。请确认首条端口映射。');
+    renderConfigView();
+    if (onboardingActive) list.querySelector('[data-field="name"]')?.focus();
+    await syncRemoteHost().catch((error) => {
+      desktopHostStatus.textContent = `远程控制主机状态同步失败：${error}`;
+      showActionFeedback('设备配对成功，远程控制主机状态暂未同步；可稍后在远程连接页重试。', true);
+    });
   } catch (error) {
     pairingFeedback.className = 'error';
     pairingFeedback.textContent = `配对失败：${error}`;
@@ -825,33 +986,132 @@ async function enrollDevice() {
 }
 
 document.querySelector('#add-proxy').addEventListener('click', () => addProxy());
+list.addEventListener('input', () => markConfigChanged(true));
 enrollDeviceButton.addEventListener('click', enrollDevice);
 for (const fieldID of ['deviceID', 'serverAddr', 'managerPort']) {
   document.querySelector(`#${fieldID}`).addEventListener('input', () => {
+    markConfigChanged();
     const credential = document.querySelector('#deviceCredential');
     if (!credential.value) return;
     credential.value = '';
+    credentialsReady = false;
+    requiresRePair = true;
+    onboardingStep = 2;
     pairingFeedback.className = 'error';
     pairingFeedback.textContent = '设备身份信息已改变，请重新使用配对码获取独立凭据。';
+    renderConfigView();
   });
 }
-document.querySelector('#profile-form').addEventListener('submit', (event) => {
-  event.preventDefault(); showResult(async () => {
-    await invoke('save_profile', { profile: profile() });
-    await syncRemoteHost();
-  });
+for (const fieldID of ['serverPort', 'token', 'protocol']) {
+  document.querySelector(`#${fieldID}`).addEventListener('input', () => markConfigChanged());
+}
+document.querySelector('#onboarding-next').addEventListener('click', () => {
+  const deviceID = document.querySelector('#deviceID');
+  const serverAddr = document.querySelector('#serverAddr');
+  const managerPort = document.querySelector('#managerPort');
+  const error = document.querySelector('#onboarding-error');
+  const invalid = [deviceID, serverAddr, managerPort].find((field) => !field.checkValidity());
+  const address = serverAddr.value.trim();
+  if (invalid || !address || address.length > 253 || address.includes('//')) {
+    error.textContent = '请先填写有效的设备标识、服务器地址和管理端口。';
+    (invalid || serverAddr).focus();
+    return;
+  }
+  error.textContent = '';
+  onboardingStep = 2;
+  renderConfigView();
+  document.querySelector('#pairing-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  document.querySelector('#pairingCode').focus();
 });
+document.querySelector('#use-pairing').addEventListener('click', () => {
+  legacyMode = false;
+  document.querySelector('#use-pairing').classList.add('active');
+  document.querySelector('#use-legacy').classList.remove('active');
+  document.querySelector('#use-pairing').setAttribute('aria-pressed', 'true');
+  document.querySelector('#use-legacy').setAttribute('aria-pressed', 'false');
+  renderConfigView();
+});
+document.querySelector('#use-legacy').addEventListener('click', () => {
+  legacyMode = true;
+  document.querySelector('#use-pairing').classList.remove('active');
+  document.querySelector('#use-legacy').classList.add('active');
+  document.querySelector('#use-pairing').setAttribute('aria-pressed', 'false');
+  document.querySelector('#use-legacy').setAttribute('aria-pressed', 'true');
+  renderConfigView();
+});
+document.querySelector('#legacy-next').addEventListener('click', () => {
+  if (document.querySelector('#token').value.length < 16) {
+    showActionFeedback('旧服务器 Token 至少需要 16 个字符。', true);
+    document.querySelector('#token').focus();
+    return;
+  }
+  credentialsReady = true;
+  onboardingStep = 3;
+  renderConfigView();
+  list.querySelector('[data-field="name"]')?.focus();
+});
+document.querySelector('#mapping-confirm').addEventListener('change', (event) => {
+  mappingConfirmed = event.target.checked;
+  renderConfigView();
+});
+document.querySelector('#open-settings').addEventListener('click', () => {
+  settingsOpen = !settingsOpen;
+  renderConfigView();
+});
+document.querySelector('#retry-profile').addEventListener('click', () => window.location.reload());
+document.querySelector('#retry-runtime').addEventListener('click', refreshRuntime);
+async function saveCurrentProfile() {
+  if (requiresRePair) throw new Error('设备身份已改变，请重新使用配对码获取独立凭据。');
+  requireValidProfileFields();
+  await invoke('save_profile', { profile: profile() });
+  savedProfile = profile();
+  if (onboardingSaveFailed) {
+    onboardingSaveFailed = false;
+    pairingFeedback.className = '';
+    pairingFeedback.textContent = '✓ 设备配对成功，连接配置已保存。';
+  }
+  dirty = false;
+  renderConfigView();
+  await syncRemoteHost().catch((error) => {
+    desktopHostStatus.textContent = `远程控制主机状态同步失败：${error}`;
+    desktopHostStatus.classList.add('error');
+  });
+}
+function saveConfiguredProfile() {
+  showResult(saveCurrentProfile, hasUnappliedChanges ? '✓ 配置已保存；运行中的 frpc 尚未应用更改。' : '✓ 配置已保存');
+}
+document.querySelector('#profile-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  saveConfiguredProfile();
+});
+document.querySelector('#save-proxies').addEventListener('click', saveConfiguredProfile);
 document.querySelector('#copy-config').addEventListener('click', () => showResult(async () => {
   const config = await invoke('render_config', { profile: profile() });
   await navigator.clipboard.writeText(config);
 }, '✓ 已复制原版 frpc TOML'));
 document.querySelector('#refresh-client').addEventListener('click', () => showResult(refreshRuntime, '✓ 状态已刷新'));
-startButton.addEventListener('click', () => showResult(async () => {
+async function startConfiguredClient() {
+  if (requiresRePair) throw new Error('设备身份已改变，请重新使用配对码获取独立凭据。');
+  requireValidProfileFields();
   const status = await invoke('start_client', { profile: profile() });
+  savedProfile = profile();
+  onboardingActive = false;
+  onboardingSaveFailed = false;
+  clearPendingOnboarding();
+  dirty = false;
+  hasUnappliedChanges = false;
   paintRuntime(status);
-  await syncRemoteHost();
+  await syncRemoteHost().catch((error) => {
+    desktopHostStatus.textContent = `远程控制主机状态同步失败：${error}`;
+    desktopHostStatus.classList.add('error');
+  });
   await refreshRuntime();
-}, '✓ 原版 frpc 已启动'));
+}
+startButton.addEventListener('click', () => showResult(startConfiguredClient, '✓ 原版 frpc 已启动'));
+document.querySelector('#onboarding-start').addEventListener('click', () => {
+  if (document.querySelector('#onboarding-start').disabled) return;
+  showResult(startConfiguredClient, '✓ 原版 frpc 已启动');
+});
 stopButton.addEventListener('click', () => showResult(async () => {
   const status = await invoke('stop_client');
   paintRuntime(status);
@@ -1012,28 +1272,50 @@ for (const eventName of ['keydown', 'keyup']) {
 }
 
 invoke('load_profile').then((saved) => {
+  profileLoaded = true;
+  savedProfile = saved;
+  onboardingActive = !saved || pendingOnboardingDevice() === saved.deviceID;
+  credentialsReady = Boolean(saved?.token && saved.token.length >= 16);
+  hydratingProfile = true;
   if (!saved) {
     const proxies = [{ name: 'ssh-home', type: 'tcp', localIP: '127.0.0.1', localPort: 22, remotePort: 30022 }];
     proxies.forEach(addProxy);
     syncRemoteHostMapping(proxies);
     updateRemoteAddress();
+    hydratingProfile = false;
+    dirty = false;
+    renderConfigView();
     return;
   }
   for (const key of ['deviceID', 'serverAddr', 'serverPort', 'managerPort', 'token', 'protocol', 'deviceCredential']) {
     if (saved[key] !== undefined) document.querySelector(`#${key}`).value = saved[key];
+  }
+  const savedPort = document.querySelector('#serverPort');
+  if (saved.serverPort && ![...savedPort.options].some((port) => port.value === String(saved.serverPort))) {
+    savedPort.append(option(String(saved.serverPort), String(saved.serverPort)));
+    savedPort.value = String(saved.serverPort);
   }
   if (saved.sshUser) document.querySelector('#sshUser').value = saved.sshUser;
   remoteControlEnabled.checked = Boolean(saved.remoteControlEnabled);
   if (['720p30', '1080p60', '4k60'].includes(saved.remoteQuality)) desktopQuality.value = saved.remoteQuality;
   if (saved.remoteClipboardEnabled !== undefined) desktopClipboardEnabled.checked = Boolean(saved.remoteClipboardEnabled);
   saved.proxies.forEach(addProxy);
+  hydratingProfile = false;
+  dirty = false;
   syncRemoteHostMapping(saved.proxies);
   updateRemoteAddress();
+  if (onboardingActive) onboardingStep = 3;
+  renderConfigView();
   syncRemoteHost().catch((error) => {
     desktopHostStatus.textContent = `远程控制主机启动失败：${error}`;
     desktopHostStatus.classList.add('error');
   });
-}).catch(() => { addProxy(); updateRemoteAddress(); });
+}).catch((error) => {
+  profileLoaded = true;
+  profileLoadError = String(error);
+  hydratingProfile = false;
+  renderConfigView();
+});
 
 invoke('remote_platform').then((platform) => {
   document.querySelector('#remote-platform').textContent = `${platform.label} 客户端`;
