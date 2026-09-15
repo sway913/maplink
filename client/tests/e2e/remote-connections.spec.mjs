@@ -98,6 +98,7 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
 test('一次性配对会自动保存独立设备凭据和可选接入端口', async ({ page }) => {
   await installTauriMock(page, []);
   await page.goto('/');
+  await page.locator('#open-settings').click();
   await page.locator('#deviceID').fill('paired-e2e');
   await page.locator('#pairingCode').fill('ABCDE-FGHIJ-KLMNO-PQRST');
   await page.locator('#enroll-device').click();

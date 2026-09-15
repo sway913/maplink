@@ -18,37 +18,61 @@
         </div>
       </header>
       <nav class="top-tabs" role="tablist" aria-label="客户端功能">
-        <button class="top-tab active" id="config-tab" type="button" role="tab" aria-selected="true" aria-controls="config-page" data-tab="config">连接配置</button>
+        <button class="top-tab active" id="config-tab" type="button" role="tab" aria-selected="true" aria-controls="config-page" data-tab="config">概览</button>
         <button class="top-tab" id="remote-tab" type="button" role="tab" aria-selected="false" aria-controls="remote-page" data-tab="remote">远程连接</button>
         <button class="top-tab" id="about-tab" type="button" role="tab" aria-selected="false" aria-controls="about-page" data-tab="about">关于</button>
       </nav>
       <section class="tab-page active" id="config-page" role="tabpanel" aria-labelledby="config-tab" data-tab-panel="config">
-        <section class="notice"><strong>已内置官方原版 frpc 0.71.0</strong><p>Windows 使用 WebView2，macOS 使用系统 WKWebView；两个平台都无需另装 frpc。</p></section>
+        <section class="config-loading panel" id="config-loading" aria-live="polite"><strong id="config-loading-title">正在读取本机配置</strong><p id="config-loading-message">正在确认设备与 frpc 状态…</p><button id="retry-profile" type="button" hidden>重新读取配置</button></section>
+        <section class="onboarding-head" id="onboarding" hidden aria-labelledby="onboarding-title">
+          <div><small>GET STARTED</small><h2 id="onboarding-title">连接你的 MapLink 服务器</h2><p>只需要完成设备信息、身份验证和首条映射。配置保存在本机。</p></div>
+          <ol class="onboarding-steps" aria-label="首次使用步骤"><li data-step="1">1 <span>设备与服务器</span></li><li data-step="2">2 <span>身份验证</span></li><li data-step="3">3 <span>映射与启动</span></li></ol>
+          <p id="onboarding-phase" aria-live="polite">填写设备与服务器信息</p>
+        </section>
+        <section class="overview-head" id="overview" hidden aria-labelledby="overview-title">
+          <div><small>DEVICE OVERVIEW</small><h2 id="overview-title">你的映射控制台</h2><p>管理本机映射和原版 frpc 进程。</p></div>
+          <div class="overview-summary"><div><span>当前设备</span><strong id="overview-device">—</strong></div><div><span>进程状态</span><strong id="overview-status" aria-live="polite">正在检查</strong></div><div><span>映射数量</span><strong id="overview-proxy-count">0</strong></div></div>
+          <div class="overview-controls"><button id="open-settings" type="button" aria-expanded="false" aria-controls="server-panel">连接设置与日志</button><button id="stop-client" type="button">停止 frpc</button><button class="primary" id="start-client" type="button">保存并启动</button></div>
+          <p id="unsaved-note" class="change-note" aria-live="polite" hidden></p>
+        </section>
+        <p id="action-feedback" class="action-feedback" aria-live="polite" hidden></p>
+        <p id="runtime-warning" class="action-feedback error" role="alert" hidden>内置 frpc 缺失，无法启动映射。请重新安装完整包，然后重新打开客户端。</p>
+        <button id="retry-runtime" type="button" hidden>重新读取 frpc 状态</button>
         <form id="profile-form">
-        <section class="panel">
-          <div class="section-title"><div><small>SERVER</small><h2>服务端信息</h2><p>推荐使用服务端设备中心生成的一次性配对码；旧服务器仍可手动填写 Token。</p></div></div>
-          <div class="grid">
+        <section class="panel server-panel" id="server-panel" hidden>
+          <div class="section-title"><div><small>SERVER</small><h2>设备与服务器</h2><p>服务器地址可填写域名或 IP，不要带 http://。</p></div></div>
+          <div class="grid identity-grid">
             <label>设备标识<input id="deviceID" value="device-01" pattern="[A-Za-z0-9_-]{1,32}" maxlength="32" required /></label>
-            <label>服务器 IP<input id="serverAddr" value="" placeholder="请输入服务器地址" required /></label>
-            <label>接入端口<select id="serverPort"><option>7000</option><option>7001</option><option>7002</option><option>7003</option><option>7004</option><option>7005</option><option>7006</option><option>7007</option><option>7008</option><option>7009</option><option>7010</option></select></label>
+            <label>服务器地址<input id="serverAddr" value="" placeholder="例如 map.example.com" required /></label>
             <label>管理端口<input id="managerPort" type="number" min="1" max="65535" value="7400" required /></label>
+          </div>
+          <div class="grid connection-fields" id="connection-fields" hidden>
+            <label>FRP 接入端口<select id="serverPort"><option>7000</option><option>7001</option><option>7002</option><option>7003</option><option>7004</option><option>7005</option><option>7006</option><option>7007</option><option>7008</option><option>7009</option><option>7010</option></select></label>
             <label class="wide">认证 Token<input id="token" type="password" placeholder="从服务端管理台复制" required /></label>
             <label>传输协议<select id="protocol"><option value="tcp">TCP</option><option value="kcp">KCP</option><option value="quic">QUIC</option></select></label>
           </div>
-          <div class="pairing-box">
-            <div><strong>快捷设备配对</strong><span>先填写设备标识、服务器地址和管理端口，再输入管理台生成的 20 位一次性配对码。</span></div>
+          <div class="step-actions" id="step-one-actions" hidden><span id="onboarding-error" aria-live="polite"></span><button class="primary" id="onboarding-next" type="button">继续：身份验证</button></div>
+        </section>
+        <section class="panel pairing-panel" id="pairing-panel" hidden>
+          <div class="section-title"><div><small>IDENTITY</small><h2>验证这台设备</h2><p>推荐一次性配对；旧服务器可继续手动填写 Token。</p></div></div>
+          <div class="identity-options" role="group" aria-label="身份验证方式"><button class="identity-option active" id="use-pairing" type="button" aria-pressed="true">一次性配对码</button><button class="identity-option" id="use-legacy" type="button" aria-pressed="false">旧服务器 Token</button></div>
+          <div class="pairing-box" id="pairing-method">
+            <div><strong>从服务端设备中心获取配对码</strong><span>20 位配对码有效期为 10 分钟，且只能使用一次。</span></div>
             <label>一次性配对码<input id="pairingCode" maxlength="23" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" /></label>
             <button class="primary" id="enroll-device" type="button">配对并填充配置</button>
             <span id="pairing-feedback" aria-live="polite"></span>
           </div>
+          <div class="legacy-method" id="legacy-method" hidden><p>填写上方服务器信息、FRP 接入端口和 Token。旧服务器不提供独立设备凭据。</p><button class="primary" id="legacy-next" type="button">继续：确认映射</button></div>
           <input id="deviceCredential" type="hidden" value="" />
         </section>
-        <section class="panel">
-          <div class="section-title"><div><small>PROXIES</small><h2>端口映射</h2><p>同一设备可添加多条 TCP/UDP；不同设备不要重复占用相同协议的远程端口。</p></div><button id="add-proxy" type="button">＋ 添加映射</button></div>
+        <section class="panel proxy-panel" id="proxy-panel" hidden>
+          <div class="section-title"><div><small>PROXIES</small><h2>端口映射</h2><p id="proxy-description">确认本机端口和服务器远程端口；同一协议的远程端口不能被其他设备重复占用。</p></div><div class="proxy-actions"><button id="save-proxies" type="button" hidden>保存映射</button><button id="add-proxy" type="button">＋ 添加映射</button></div></div>
+          <div class="proxy-columns" aria-hidden="true"><span>映射名称</span><span>协议</span><span>本地 IP</span><span>本地端口</span><span>远程端口</span><span></span></div>
           <div id="proxy-list"></div>
+          <div class="mapping-check" id="mapping-check" hidden><label><input id="mapping-confirm" type="checkbox" />我已确认以下映射的本地服务与远程端口；示例 SSH 映射不会自动启用本机 SSH。</label><button class="primary" id="onboarding-start" type="button" disabled>保存并启动 frpc</button></div>
         </section>
-        <section class="panel runtime-panel">
-          <div class="section-title"><div><small>RUNTIME</small><h2>原版 frpc 控制</h2><p>配置写入当前用户目录，原版进程在后台运行；关闭本程序时会自动停止。</p></div><div class="runtime-actions"><button id="refresh-client" type="button">刷新</button><button id="stop-client" type="button">停止</button><button class="primary" id="start-client" type="button">保存并启动</button></div></div>
+        <section class="panel runtime-panel" id="runtime-panel" hidden>
+          <div class="section-title"><div><small>RUNTIME</small><h2>运行详情</h2><p>配置写入当前用户目录；关闭本程序时会自动停止原版 frpc。</p></div><div class="runtime-actions"><button id="refresh-client" type="button">刷新状态</button></div></div>
           <div class="runtime-grid">
             <div><span>进程状态</span><strong id="process-state">检查中</strong></div>
             <div><span>进程 PID</span><strong id="process-pid">—</strong></div>
@@ -58,7 +82,7 @@
           <div class="log-heading"><span>最近日志</span><code id="log-path">—</code></div>
           <pre id="client-logs">暂无日志</pre>
         </section>
-        <footer><span id="feedback">配置只保存在当前用户目录。</span><button id="copy-config" type="button">复制 TOML</button><button class="primary" type="submit">保存配置</button></footer>
+        <footer id="profile-footer" hidden><span id="feedback" aria-live="polite">配置只保存在当前用户目录。</span><button id="copy-config" type="button">复制 TOML</button><button class="primary" type="submit">保存配置</button></footer>
         </form>
       </section>
       <section class="tab-page" id="remote-page" role="tabpanel" aria-labelledby="remote-tab" data-tab-panel="remote" hidden>
@@ -219,16 +243,21 @@
     </main>
     <template id="proxy-template">
       <div class="proxy-row">
-        <input data-field="name" placeholder="名称，如 ssh-home" required />
-        <select data-field="type"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
-        <input data-field="localIP" value="127.0.0.1" placeholder="本地 IP" required />
-        <input data-field="localPort" type="number" min="1" max="65535" placeholder="本地端口" required />
-        <input data-field="remotePort" type="number" min="1" max="65535" placeholder="远程端口" required />
-        <button data-remove type="button">删除</button>
+        <span class="proxy-mobile-label" data-label-for="name">映射名称</span>
+        <input data-field="name" aria-label="映射名称" placeholder="名称，如 ssh-home" required />
+        <span class="proxy-mobile-label" data-label-for="type">协议</span>
+        <select data-field="type" aria-label="映射协议"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+        <span class="proxy-mobile-label" data-label-for="localIP">本地 IP</span>
+        <input data-field="localIP" aria-label="本地 IP" value="127.0.0.1" placeholder="本地 IP" required />
+        <span class="proxy-mobile-label" data-label-for="localPort">本地端口</span>
+        <input data-field="localPort" aria-label="本地端口" type="number" min="1" max="65535" placeholder="本地端口" required />
+        <span class="proxy-mobile-label" data-label-for="remotePort">远程端口</span>
+        <input data-field="remotePort" aria-label="远程端口" type="number" min="1" max="65535" placeholder="远程端口" required />
+        <button data-remove type="button" aria-label="删除映射">删除</button>
       </div>
     </template>
     <script src="vendor/xterm/xterm.js"></script>
     <script src="vendor/xterm/addon-fit.js"></script>
-    <script src="app.js"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>

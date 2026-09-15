@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
-test('客户端把连接配置、远程连接和关于放在顶部 Tab', async () => {
+test('客户端把概览、远程连接和关于放在顶部 Tab，并为首次使用保留引导', async () => {
   const [html, script, styles, tauriConfig, packageConfig, cargo] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
@@ -16,7 +16,10 @@ test('客户端把连接配置、远程连接和关于放在顶部 Tab', async (
   const versionPattern = tauriConfig.version.replaceAll('.', '\\.');
 
   assert.match(html, /class="top-tabs"/);
-  assert.match(html, /data-tab="config"[^>]*>连接配置/);
+  assert.match(html, /data-tab="config"[^>]*>概览/);
+  assert.match(html, /id="onboarding"/);
+  assert.match(html, /id="overview-status"/);
+  assert.match(html, /id="mapping-confirm"/);
   assert.match(html, /data-tab="remote"[^>]*>远程连接/);
   assert.match(html, /data-tab="about"[^>]*>关于/);
   assert.match(html, /id="about-page"/);
