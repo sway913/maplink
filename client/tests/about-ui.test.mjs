@@ -5,13 +5,15 @@ import test from 'node:test';
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
 test('客户端把概览、远程连接和关于放在顶部 Tab，并为首次使用保留引导', async () => {
-  const [html, script, styles, tauriConfig, packageConfig, cargo] = await Promise.all([
+  const [html, script, styles, tauriConfig, packageConfig, packageLock, cargo, cargoLock] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
     read('../ui/styles.css'),
     read('../src-tauri/tauri.conf.json').then(JSON.parse),
     read('../package.json').then(JSON.parse),
+    read('../package-lock.json').then(JSON.parse),
     read('../src-tauri/Cargo.toml'),
+    read('../src-tauri/Cargo.lock'),
   ]);
   const versionPattern = tauriConfig.version.replaceAll('.', '\\.');
 
@@ -39,6 +41,10 @@ test('客户端把概览、远程连接和关于放在顶部 Tab，并为首次�
   assert.match(styles, /\.top-tabs/);
   assert.match(styles, /\.about-page/);
   assert.equal(packageConfig.version, tauriConfig.version);
+  assert.equal(tauriConfig.version, '0.8.3');
+  assert.equal(packageLock.version, tauriConfig.version);
+  assert.equal(packageLock.packages[''].version, tauriConfig.version);
+  assert.match(cargoLock, new RegExp(`name = "maplink-client"\\s+version = "${versionPattern}"`));
   assert.equal(packageConfig.dependencies['@xterm/xterm'], '5.5.0');
   assert.equal(packageConfig.dependencies['@xterm/addon-fit'], '0.10.0');
   assert.match(tauriConfig.app.security.csp, /style-src 'self' 'unsafe-inline'/);
