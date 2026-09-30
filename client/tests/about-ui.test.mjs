@@ -5,13 +5,15 @@ import test from 'node:test';
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
 test('客户端把概览、远程连接和关于放在顶部 Tab，并为首次使用保留引导', async () => {
-  const [html, script, styles, tauriConfig, packageConfig, cargo] = await Promise.all([
+  const [html, script, styles, tauriConfig, packageConfig, packageLock, cargo, cargoLock] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
     read('../ui/styles.css'),
     read('../src-tauri/tauri.conf.json').then(JSON.parse),
     read('../package.json').then(JSON.parse),
+    read('../package-lock.json').then(JSON.parse),
     read('../src-tauri/Cargo.toml'),
+    read('../src-tauri/Cargo.lock'),
   ]);
   const versionPattern = tauriConfig.version.replaceAll('.', '\\.');
 
@@ -39,6 +41,10 @@ test('客户端把概览、远程连接和关于放在顶部 Tab，并为首次�
   assert.match(styles, /\.top-tabs/);
   assert.match(styles, /\.about-page/);
   assert.equal(packageConfig.version, tauriConfig.version);
+  assert.equal(tauriConfig.version, '0.8.3');
+  assert.equal(packageLock.version, tauriConfig.version);
+  assert.equal(packageLock.packages[''].version, tauriConfig.version);
+  assert.match(cargoLock, new RegExp(`name = "maplink-client"\\s+version = "${versionPattern}"`));
   assert.equal(packageConfig.dependencies['@xterm/xterm'], '5.5.0');
   assert.equal(packageConfig.dependencies['@xterm/addon-fit'], '0.10.0');
   assert.match(tauriConfig.app.security.csp, /style-src 'self' 'unsafe-inline'/);
@@ -171,12 +177,13 @@ test('SSH 页面自动配置 Windows 与 macOS OpenSSH，并且私钥只保留�
   assert.match(xtermLicense, /MIT License|Permission is hereby granted/);
 });
 
-test('远程桌面支持高帧率画质、独立全屏窗口和双向剪贴板', async () => {
-  const [html, script, viewerHtml, viewerScript, rust, server, buildScript] = await Promise.all([
+test('远程桌面支持高帧率画质、独立窗口和双向剪贴板', async () => {
+  const [html, script, viewerHtml, viewerScript, nativeWindow, rust, server, buildScript] = await Promise.all([
     read('../ui/index.html'),
     read('../ui/app.js'),
     read('../ui/remote-viewer.html'),
     read('../ui/remote-viewer.js'),
+    read('../src-tauri/src/lib.rs'),
     read('../src-tauri/src/remote_control.rs'),
     read('../../server/internal/manager/remote.go'),
     read('../src-tauri/build.rs'),
@@ -243,7 +250,14 @@ test('远程桌面支持高帧率画质、独立全屏窗口和双向剪贴板',
   assert.match(viewerHtml, /id="viewer-clipboard"/);
   assert.match(viewerScript, /remote-viewer-input/);
   assert.match(script, /queueRemoteInput\(event, 0\)/);
-  assert.match(viewerScript, /set_remote_viewer_fullscreen/);
+  assert.match(html, /id="open-remote-viewer"[^>]*>独立窗口/);
+  assert.doesNotMatch(viewerHtml, /viewer-exit-fullscreen|远程桌面全屏画面/);
+  assert.doesNotMatch(viewerScript, /set_remote_viewer_fullscreen/);
+  const openViewer = nativeWindow.slice(nativeWindow.indexOf('fn open_remote_viewer'), nativeWindow.indexOf('fn close_remote_viewer'));
+  assert.match(openViewer, /\.inner_size\(1280\.0, 800\.0\)/);
+  assert.match(openViewer, /\.resizable\(true\)/);
+  assert.doesNotMatch(openViewer, /\.fullscreen\(true\)|set_fullscreen\(true\)/);
+  assert.match(nativeWindow, /WindowEvent::Destroyed[\s\S]*remote-viewer-closed/);
   assert.match(viewerScript, /requestAnimationFrame/);
   const runtimeRefresh = script.slice(script.indexOf('async function refreshRuntime'), script.indexOf('function remoteShellRequest'));
   assert.doesNotMatch(runtimeRefresh, /refreshRemoteControlDevices/);
