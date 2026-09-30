@@ -16,10 +16,12 @@ const profile = {
 async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, sshInstallDelay = 0, firstRemoteFrame = null) {
   await page.addInitScript(({ savedProfile, devices, sshReady, installDelay, remoteFrame }) => {
     const calls = [];
+    const emitted = [];
     const eventListeners = new Map();
     let openSSHReady = sshReady;
     let frameDelivered = false;
     window.__MAPLINK_E2E_CALLS__ = calls;
+    window.__MAPLINK_E2E_EVENTS__ = emitted;
     window.__TAURI__ = {
       event: {
         listen: async (name, callback) => {
@@ -29,6 +31,7 @@ async function installTauriMock(page, remoteDevices, sshInitiallyReady = true, s
           return () => eventListeners.set(name, callbacks.filter((item) => item !== callback));
         },
         emit: async (name, payload) => {
+          emitted.push({ name, payload });
           for (const callback of eventListeners.get(name) || []) callback({ payload });
         },
       },
@@ -179,7 +182,7 @@ test('远程会话收到的 data 图片帧会显示在桌面区域', async ({ pa
   await expect(page.locator('#desktop-frame-meta')).toContainText('帧 1');
 });
 
-test('独立全屏窗口显示工具栏、画面并回传画质与输入', async ({ page }) => {
+test('独立窗口显示工具栏、画面并回传画质与输入', async ({ page }) => {
   await page.addInitScript(() => {
     const listeners = new Map();
     const emitted = [];
@@ -202,6 +205,8 @@ test('独立全屏窗口显示工具栏、画面并回传画质与输入', async
   });
   await page.goto('/remote-viewer.html');
   await expect(page.locator('#viewer-quality option')).toHaveCount(3);
+  await expect(page.locator('#viewer-exit-fullscreen')).toHaveCount(0);
+  await expect(page.locator('#viewer-placeholder')).toBeVisible();
   await page.evaluate(() => {
     window.__MAPLINK_VIEWER_DISPATCH__('remote-viewer-state', {
       connected: true,
@@ -226,6 +231,37 @@ test('独立全屏窗口显示工具栏、画面并回传画质与输入', async
   await expect.poll(() => page.evaluate(() => window.__MAPLINK_VIEWER_EVENTS__.some((item) => item.name === 'remote-viewer-quality' && item.payload.quality === '4k60'))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__MAPLINK_VIEWER_EVENTS__.some((item) => item.name === 'remote-viewer-clipboard' && item.payload.enabled === false))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__MAPLINK_VIEWER_EVENTS__.some((item) => item.name === 'remote-viewer-input'))).toBe(true);
+});
+
+test('独立窗口就绪前画面留在主窗口，就绪后补发最近一帧', async ({ page }) => {
+  await installTauriMock(page, [
+    { deviceID: 'local-e2e', name: '当前设备', platform: 'windows', permission: 'ready' },
+    { deviceID: 'e5', name: 'e5主机', platform: 'windows', permission: 'ready' },
+  ], true, 0, {
+    sequence: 1,
+    width: 1,
+    height: 1,
+    dataUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
+  });
+  await page.goto('/');
+  await page.getByRole('tab', { name: '远程连接' }).click();
+  await page.getByRole('tab', { name: '远程控制', exact: true }).click();
+  await page.locator('#connect-remote-desktop').click();
+  await expect(page.locator('#remote-screen-image')).toHaveAttribute('src', /^data:image\/gif;base64,/);
+
+  await page.locator('#open-remote-viewer').click();
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.some((item) => item.command === 'open_remote_viewer'))).toBe(true);
+  expect(await page.evaluate(() => window.__MAPLINK_E2E_EVENTS__.filter((item) => item.name === 'remote-viewer-frame'))).toHaveLength(0);
+
+  await page.evaluate(() => window.__TAURI__.event.emit('remote-viewer-ready'));
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_EVENTS__.filter((item) => item.name === 'remote-viewer-frame').length)).toBe(1);
+  const state = await page.evaluate(() => window.__MAPLINK_E2E_EVENTS__.find((item) => item.name === 'remote-viewer-state')?.payload);
+  expect(state.connected).toBe(true);
+
+  await page.evaluate(() => window.__TAURI__.event.emit('remote-viewer-closed'));
+  await page.locator('#desktop-quality').selectOption('720p30');
+  await expect.poll(() => page.evaluate(() => window.__MAPLINK_E2E_CALLS__.some((item) => item.command === 'update_remote_control_settings' && item.arguments_.quality === '720p30'))).toBe(true);
+  expect(await page.evaluate(() => window.__MAPLINK_E2E_EVENTS__.filter((item) => item.name === 'remote-viewer-state'))).toHaveLength(1);
 });
 
 test('进入远程控制只自动刷新一次，手动刷新仍可用', async ({ page }) => {

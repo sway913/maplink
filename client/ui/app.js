@@ -1206,10 +1206,8 @@ openRemoteViewerButton.addEventListener('click', async () => {
   try {
     await remoteViewerEventsReady;
     await invoke('open_remote_viewer');
-    remoteViewerOpen = true;
-    publishRemoteViewerState();
   } catch (error) {
-    desktopHostStatus.textContent = `打开全屏窗口失败：${error}`;
+    desktopHostStatus.textContent = `打开独立窗口失败：${error}`;
     desktopHostStatus.classList.add('error');
   }
 });

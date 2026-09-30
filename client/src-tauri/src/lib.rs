@@ -1228,10 +1228,13 @@ fn client_logs(app: AppHandle, lines: Option<usize>) -> Result<String, String> {
 #[tauri::command]
 fn open_remote_viewer(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("remote-viewer") {
-        window.show().map_err(|error| error.to_string())?;
         window
-            .set_fullscreen(true)
+            .set_fullscreen(false)
             .map_err(|error| error.to_string())?;
+        window
+            .set_always_on_top(false)
+            .map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
     }
@@ -1241,20 +1244,14 @@ fn open_remote_viewer(app: AppHandle) -> Result<(), String> {
         WebviewUrl::App("remote-viewer.html".into()),
     )
     .title("MapLink 远程桌面")
-    .fullscreen(true)
+    .inner_size(1280.0, 800.0)
+    .min_inner_size(640.0, 400.0)
+    .resizable(true)
+    .center()
+    .always_on_top(false)
     .build()
-    .map_err(|error| format!("打开全屏远程桌面失败：{error}"))?;
+    .map_err(|error| format!("打开远程桌面窗口失败：{error}"))?;
     Ok(())
-}
-
-#[tauri::command]
-fn set_remote_viewer_fullscreen(app: AppHandle, fullscreen: bool) -> Result<(), String> {
-    let window = app
-        .get_webview_window("remote-viewer")
-        .ok_or_else(|| "远程桌面窗口尚未打开".to_string())?;
-    window
-        .set_fullscreen(fullscreen)
-        .map_err(|error| format!("切换全屏失败：{error}"))
 }
 
 #[tauri::command]
@@ -1303,7 +1300,6 @@ pub fn run() {
             read_local_clipboard,
             write_local_clipboard,
             open_remote_viewer,
-            set_remote_viewer_fullscreen,
             close_remote_viewer,
             check_for_update,
             download_and_install_update
@@ -1311,6 +1307,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building MapLink Client");
     app.run(|app_handle, event| {
+        if let RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Destroyed,
+            ..
+        } = &event
+        {
+            if label == "remote-viewer" {
+                let _ = app_handle.emit("remote-viewer-closed", ());
+            }
+        }
         if matches!(event, RunEvent::Exit) {
             let runtime = app_handle.state::<RuntimeState>();
             let _ = runtime.stop_process();

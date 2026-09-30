@@ -86,7 +86,6 @@ Promise.all([
 
 quality.addEventListener('change', () => emit('remote-viewer-quality', { quality: quality.value }));
 clipboard.addEventListener('change', () => emit('remote-viewer-clipboard', { enabled: clipboard.checked }));
-document.querySelector('#viewer-exit-fullscreen').addEventListener('click', () => invoke('set_remote_viewer_fullscreen', { fullscreen: false }));
 document.querySelector('#viewer-close').addEventListener('click', () => invoke('close_remote_viewer'));
 
 screen.addEventListener('contextmenu', (event) => event.preventDefault());
